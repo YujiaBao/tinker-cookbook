@@ -7,8 +7,9 @@ to the target and use only the provided numbers.
 Example usage:
     python -m tinker_cookbook.recipes.countdown_rl.train
 
-    # With custom model:
-    python -m tinker_cookbook.recipes.countdown_rl.train --model_name meta-llama/Llama-3.2-3B-Instruct
+    # With custom model and hyperparameters:
+    python -m tinker_cookbook.recipes.countdown_rl.train \
+        model_name=Qwen/Qwen3.5-4B learning_rate=1e-4 group_size=16
 """
 
 import asyncio
@@ -37,9 +38,9 @@ class CLIConfig:
     load_checkpoint_path: str | None = None
 
     # Training hyperparameters
-    group_size: int = 8
-    groups_per_batch: int = 64
-    learning_rate: float = 5e-4
+    group_size: int = 16
+    groups_per_batch: int = 16
+    learning_rate: float = 1e-4
     max_tokens: int = 512
     temperature: float = 1.0
     kl_penalty_coef: float = 0.0
