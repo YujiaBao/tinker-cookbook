@@ -15,7 +15,8 @@ Example usage:
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 import chz
 from tinker.types import LossFnType
@@ -41,7 +42,7 @@ class CLIConfig:
     group_size: int = 16
     groups_per_batch: int = 16
     learning_rate: float = 1e-4
-    max_tokens: int = 512
+    max_tokens: int = 1024
     temperature: float = 1.0
     kl_penalty_coef: float = 0.0
 
@@ -50,6 +51,7 @@ class CLIConfig:
     n_test: int = 500
     seed: int = 0
     include_fewshot: bool = True
+    reward_mode: Literal["binary", "partial"] = "partial"
 
     # Logging configuration
     log_path: str | None = None
@@ -90,7 +92,8 @@ async def cli_main(cli_config: CLIConfig):
         f"-seed{cli_config.seed}-{datetime.now().strftime('%Y-%m-%d-%H-%M')}"
     )
 
-    log_path = cli_config.log_path or f"/tmp/tinker-examples/countdown_rl/{run_name}"
+    default_log_dir = Path.home() / "tinker-experiments" / "countdown_rl"
+    log_path = cli_config.log_path or str(default_log_dir / run_name)
     wandb_name = cli_config.wandb_name or run_name
 
     config = Config(
@@ -104,6 +107,7 @@ async def cli_main(cli_config: CLIConfig):
             n_test=cli_config.n_test,
             seed=cli_config.seed,
             include_fewshot=cli_config.include_fewshot,
+            reward_mode=cli_config.reward_mode,
         ),
         model_name=cli_config.model_name,
         renderer_name=renderer_name,
