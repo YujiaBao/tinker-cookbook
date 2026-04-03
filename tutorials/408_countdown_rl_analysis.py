@@ -11,6 +11,13 @@ def _():
     return (mo,)
 
 
+@app.cell
+def _():
+    import matplotlib.pyplot as plt
+
+    return (plt,)
+
+
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
@@ -214,57 +221,55 @@ def _():
 
 
 @app.cell
-def _(binary_metrics, partial_metrics):
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+def _(binary_metrics, partial_metrics, plt):
+    _fig1, _axes = plt.subplots(1, 2, figsize=(14, 5))
 
     # Left plot: training accuracy
-    ax = axes[0]
-    ax.plot(
+    _ax_left = _axes[0]
+    _ax_left.plot(
         [m["step"] for m in binary_metrics],
         [m["correct"] for m in binary_metrics],
         "o-", label="Binary reward", alpha=0.8,
     )
-    ax.plot(
+    _ax_left.plot(
         [m["step"] for m in partial_metrics],
         [m["correct"] for m in partial_metrics],
         "s-", label="Partial credit", alpha=0.8,
     )
     # Test accuracy markers
-    for metrics, marker, color in [
+    for _metrics, _marker, _color in [
         (binary_metrics, "D", "C0"),
         (partial_metrics, "D", "C1"),
     ]:
-        test_steps = [m["step"] for m in metrics if m["test"] is not None]
-        test_accs = [m["test"] for m in metrics if m["test"] is not None]
-        ax.plot(test_steps, test_accs, marker, color=color, markersize=10, zorder=5)
-    ax.set_xlabel("Training step")
-    ax.set_ylabel("Fraction correct")
-    ax.set_title("Training accuracy (circles) and test accuracy (diamonds)")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim(0, 1.05)
+        _test_steps = [m["step"] for m in _metrics if m["test"] is not None]
+        _test_accs = [m["test"] for m in _metrics if m["test"] is not None]
+        _ax_left.plot(_test_steps, _test_accs, _marker, color=_color, markersize=10, zorder=5)
+    _ax_left.set_xlabel("Training step")
+    _ax_left.set_ylabel("Fraction correct")
+    _ax_left.set_title("Training accuracy (circles) and test accuracy (diamonds)")
+    _ax_left.legend()
+    _ax_left.grid(True, alpha=0.3)
+    _ax_left.set_ylim(0, 1.05)
 
     # Right plot: fraction of all-bad groups
-    ax = axes[1]
-    ax.plot(
+    _ax_right = _axes[1]
+    _ax_right.plot(
         [m["step"] for m in binary_metrics],
         [m["all_bad"] for m in binary_metrics],
         "o-", label="Binary reward", alpha=0.8,
     )
-    ax.plot(
+    _ax_right.plot(
         [m["step"] for m in partial_metrics],
         [m["all_bad"] for m in partial_metrics],
         "s-", label="Partial credit", alpha=0.8,
     )
-    ax.set_xlabel("Training step")
-    ax.set_ylabel("Fraction of groups")
-    ax.set_title('"All-bad" groups (zero learning signal)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim(-0.02, 0.5)
-    ax.axhline(y=0, color="black", linewidth=0.5, linestyle="--")
+    _ax_right.set_xlabel("Training step")
+    _ax_right.set_ylabel("Fraction of groups")
+    _ax_right.set_title('"All-bad" groups (zero learning signal)')
+    _ax_right.legend()
+    _ax_right.grid(True, alpha=0.3)
+    _ax_right.set_ylim(-0.02, 0.5)
+    _ax_right.axhline(y=0, color="black", linewidth=0.5, linestyle="--")
 
     plt.tight_layout()
     plt.show()
@@ -375,9 +380,7 @@ def _(mo):
 
 
 @app.cell
-def _():
-    import matplotlib.pyplot as plt
-
+def _(plt):
     # Token length data from the 40-step experiment (partial, 2048 tokens)
     steps_40 = list(range(40))
     avg_tokens_40 = [
@@ -393,25 +396,25 @@ def _():
         0.793, 0.883, 0.785, 0.797, 0.672, 0.668, 0.840, 0.758, 0.938, 0.648,
     ]
 
-    fig, ax1 = plt.subplots(figsize=(12, 5))
+    _fig2, _ax_tok = plt.subplots(figsize=(12, 5))
 
-    color1 = "C0"
-    ax1.plot(steps_40, avg_tokens_40, "o-", color=color1, alpha=0.7, markersize=4)
-    ax1.set_xlabel("Training step")
-    ax1.set_ylabel("Avg response tokens", color=color1)
-    ax1.tick_params(axis="y", labelcolor=color1)
-    ax1.set_ylim(200, 1300)
+    _color1 = "C0"
+    _ax_tok.plot(steps_40, avg_tokens_40, "o-", color=_color1, alpha=0.7, markersize=4)
+    _ax_tok.set_xlabel("Training step")
+    _ax_tok.set_ylabel("Avg response tokens", color=_color1)
+    _ax_tok.tick_params(axis="y", labelcolor=_color1)
+    _ax_tok.set_ylim(200, 1300)
 
-    ax2 = ax1.twinx()
-    color2 = "C1"
-    ax2.plot(steps_40, correct_40, "s-", color=color2, alpha=0.7, markersize=4)
-    ax2.set_ylabel("Train accuracy", color=color2)
-    ax2.tick_params(axis="y", labelcolor=color2)
-    ax2.set_ylim(0.2, 1.05)
+    _ax_acc = _ax_tok.twinx()
+    _color2 = "C1"
+    _ax_acc.plot(steps_40, correct_40, "s-", color=_color2, alpha=0.7, markersize=4)
+    _ax_acc.set_ylabel("Train accuracy", color=_color2)
+    _ax_acc.tick_params(axis="y", labelcolor=_color2)
+    _ax_acc.set_ylim(0.2, 1.05)
 
-    ax1.set_title("GRPO learns conciseness: tokens decrease as accuracy increases")
-    ax1.grid(True, alpha=0.2)
-    fig.tight_layout()
+    _ax_tok.set_title("GRPO learns conciseness: tokens decrease as accuracy increases")
+    _ax_tok.grid(True, alpha=0.2)
+    _fig2.tight_layout()
     plt.show()
     return
 
@@ -443,26 +446,24 @@ def _(mo):
 
 
 @app.cell
-def _():
-    import matplotlib.pyplot as plt
-
+def _(plt):
     # From analyzing step-20 eval rollouts of the best model
     # 200 test problems, 160 correct, 40 wrong
     categories = ["Correct\n(within budget)", "Truncated\n(ran out of tokens)", "Wrong answer\n(within budget)"]
     counts = [160, 39, 1]
     colors = ["#2ecc71", "#e74c3c", "#f39c12"]
 
-    fig, ax = plt.subplots(figsize=(7, 4))
-    bars = ax.bar(categories, counts, color=colors, edgecolor="white", linewidth=2)
-    for bar, count in zip(bars, counts):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2, bar.get_height() + 3,
-            str(count), ha="center", fontweight="bold", fontsize=14,
+    _fig3, _ax_bar = plt.subplots(figsize=(7, 4))
+    _bars = _ax_bar.bar(categories, counts, color=colors, edgecolor="white", linewidth=2)
+    for _bar, _count in zip(_bars, counts):
+        _ax_bar.text(
+            _bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 3,
+            str(_count), ha="center", fontweight="bold", fontsize=14,
         )
-    ax.set_ylabel("Number of test problems")
-    ax.set_title("Failure analysis at 85% test accuracy (200 problems)")
-    ax.set_ylim(0, 200)
-    ax.grid(True, alpha=0.2, axis="y")
+    _ax_bar.set_ylabel("Number of test problems")
+    _ax_bar.set_title("Failure analysis at 85% test accuracy (200 problems)")
+    _ax_bar.set_ylim(0, 200)
+    _ax_bar.grid(True, alpha=0.2, axis="y")
     plt.tight_layout()
     plt.show()
     return
