@@ -23,50 +23,92 @@ def _(mo):
     mo.md(r"""
     # Tutorial: RL Reward Design — A Countdown Case Study
 
-    This tutorial uses the **Countdown number game** to explore how reward function
-    design affects RL training. You will:
+    In tutorial 04, you learned the raw GRPO loop. In this tutorial, you will build
+    a complete RL environment for the **Countdown number game** and see how **reward
+    function design** directly affects training. You will:
 
-    1. Build a verifiable reward function for a math puzzle
-    2. Compare **binary** vs **partial credit** rewards and see how they change GRPO's behavior
-    3. Analyze model rollouts to understand *what the model actually learns*
-    4. See how token budget, group size, and other choices interact with reward design
+    1. Define a `ProblemEnv` with a verifiable reward function
+    2. Compare **binary** vs **partial credit** rewards on the same task
+    3. Train with GRPO and watch accuracy, token length, and useful groups evolve
+    4. Analyze rollouts to understand what the model learns
 
-    The Countdown task: given 3–4 numbers and a target, combine the numbers with
-    `+`, `-`, `*`, `/` to reach the target. Each number can be used at most once.
-
-    > **Example**: numbers = [3, 7, 2], target = 13 → `3 * 2 + 7 = 13`
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 1. The reward function
-
-    A good RL reward function for math tasks has two properties:
-    - **Verifiable**: we can check correctness programmatically (no human labels needed)
-    - **Informative**: it gives the model useful gradient signal
-
-    Let's start with the simplest possible reward — **binary**: 1.0 if correct, 0.0 if wrong.
+    The Countdown task: given 3–4 numbers and a target, combine them with `+`, `-`,
+    `*`, `/` to reach the target. Each number can be used at most once.
     """)
     return
 
 
 @app.cell
 def _():
+    import math
     import re
+    import warnings
+    from collections.abc import Sequence
+    from functools import partial
 
-    def evaluate_countdown_expression(
+    warnings.filterwarnings("ignore", message="IProgress not found")
+
+    import tinker
+
+    from tinker_cookbook.renderers import get_renderer, get_text_content
+    from tinker_cookbook.rl.data_processing import (
+        assemble_training_data,
+        compute_advantages,
+    )
+    from tinker_cookbook.rl.problem_env import ProblemEnv, ProblemGroupBuilder
+    from tinker_cookbook.rl.rollouts import (
+        do_group_rollout_and_filter_constant_reward,
+    )
+    from tinker_cookbook.rl.types import EnvGroupBuilder, RLDataset
+    from tinker_cookbook.tokenizer_utils import get_tokenizer
+
+    return (
+        EnvGroupBuilder,
+        ProblemEnv,
+        ProblemGroupBuilder,
+        RLDataset,
+        Sequence,
+        assemble_training_data,
+        compute_advantages,
+        do_group_rollout_and_filter_constant_reward,
+        get_renderer,
+        get_text_content,
+        get_tokenizer,
+        math,
+        partial,
+        re,
+        tinker,
+    )
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Step 1 — The reward function
+
+    A good RL reward function is **verifiable** (we can check correctness programmatically)
+    and **informative** (it gives the model useful gradient signal).
+
+    We start with two grading functions: one that returns binary pass/fail, and one
+    that gives **partial credit** for expressions that use valid numbers but get the
+    wrong result. The partial score includes a proximity bonus — closer to the target
+    means higher reward.
+    """)
+    return
+
+
+@app.cell
+def _(re):
+    def evaluate_expression(
         expression: str, available_nums: list[int], target: int
     ) -> tuple[bool, float]:
-        """Grade a countdown expression, returning (is_correct, partial_score).
+        """Grade a countdown expression.
 
-        The partial score gives intermediate credit:
-        - 0.0 if the expression is invalid or uses wrong numbers
-        - 0.3 if valid numbers but wrong result
-        - 0.3 + up to 0.3 proximity bonus (closer to target = higher)
-        - 1.0 if exactly correct
+        Returns:
+            (is_correct, partial_score) where partial_score is:
+            - 0.0 if invalid expression or uses wrong numbers
+            - 0.3 + proximity bonus (up to 0.3) if valid but wrong result
+            - 1.0 if exactly correct
         """
         try:
             if not re.match(r"^[\d\s\+\-\*/\(\)\.]+$", expression):
@@ -84,7 +126,7 @@ def _():
             if abs(result - target) < 1e-6:
                 return True, 1.0
 
-            # Partial credit: valid expression with correct numbers but wrong result
+            # Partial credit: proximity to target
             if target != 0:
                 relative_error = abs(result - target) / abs(target)
                 proximity = max(0.0, 1.0 - relative_error)
@@ -94,377 +136,455 @@ def _():
         except Exception:
             return False, 0.0
 
-    def extract_answer(response: str) -> str | None:
-        """Extract expression from \\boxed{} or the last arithmetic line."""
-        boxed_match = re.search(r"\\boxed\{([^}]+)\}", response)
-        if boxed_match:
-            return boxed_match.group(1).strip()
+    def extract_boxed(response: str) -> str | None:
+        """Extract expression from \\boxed{} or last arithmetic line."""
+        match = re.search(r"\\boxed\{([^}]+)\}", response)
+        if match:
+            return match.group(1).strip()
         for line in reversed(response.strip().splitlines()):
             line = line.strip()
             if re.search(r"\d+\s*[\+\-\*/]", line):
-                line = re.sub(r"^[=:\s]+", "", line)
-                return line.strip()
+                return re.sub(r"^[=:\s]+", "", line).strip()
         return None
 
-    return evaluate_countdown_expression, extract_answer
+    return evaluate_expression, extract_boxed
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ### Binary vs partial credit
+    ### See the difference: binary vs partial credit
 
-    Let's see how the two reward modes score the same set of responses:
+    Let's grade the same set of responses both ways:
     """)
     return
 
 
 @app.cell
-def _(evaluate_countdown_expression, extract_answer):
-    # Simulated model responses for target=98, nums=[44, 19, 35]
-    examples = [
-        ("44 + 19 + 35", "All three numbers sum to 98 — correct!"),
-        ("44 + 19", "Valid numbers, 44+19 = 63 — wrong result, ~64% of target"),
-        ("44 + 35", "Valid numbers, 44+35 = 79 — closer, ~81% of target"),
-        ("50 + 48", "Uses numbers not in the list — invalid"),
+def _(evaluate_expression):
+    _target = 98
+    _nums = [44, 19, 35]
+
+    _examples = [
+        "44 + 19 + 35",   # correct
+        "44 + 35",         # valid numbers, result=79 (close)
+        "44 + 19",         # valid numbers, result=63 (farther)
+        "50 + 48",         # invalid numbers
     ]
 
-    target = 98
-    nums = [44, 19, 35]
-
-    print(f"Target: {target}, Numbers: {nums}\n")
-    print(f"{'Expression':<25} {'Binary':>8} {'Partial':>8}  Note")
-    print("-" * 75)
-    for expr, note in examples:
-        is_correct, partial = evaluate_countdown_expression(expr, nums, target)
-        binary = 1.0 if is_correct else 0.0
-        print(f"{expr:<25} {binary:>8.1f} {partial:>8.2f}  {note}")
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    Notice the difference:
-    - **Binary** gives 0.0 to everything that isn't perfect — no gradient signal
-    - **Partial** gives 0.55 for "close to target" and 0.30 for "valid but far off"
-
-    This matters for GRPO because **advantages are computed within each group**. If all
-    completions in a group score 0.0 (an "all-bad" group), every advantage is zero and
-    that group contributes **nothing** to the training gradient. Partial credit converts
-    some of these dead groups into useful training signal.
-    """)
+    print(f"Target: {_target}, Numbers: {_nums}\n")
+    print(f"{'Expression':<20} {'Binary':>8} {'Partial':>8}  {'Eval':>6}")
+    print("-" * 60)
+    for _expr in _examples:
+        _correct, _partial = evaluate_expression(_expr, _nums, _target)
+        _binary = 1.0 if _correct else 0.0
+        try:
+            _val = eval(_expr)
+        except Exception:
+            _val = "err"
+        print(f"{_expr:<20} {_binary:>8.1f} {_partial:>8.2f}  {_val!s:>6}")
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 2. Training dynamics: binary vs partial
+    Binary gives 0.0 to everything except the perfect answer. Partial credit gives
+    **0.54** for "close to target" and **0.49** for "farther off." This variance within
+    a GRPO group is what creates learning signal — if all completions score 0.0, every
+    advantage is zero and the group contributes nothing to the gradient.
+    """)
+    return
 
-    We ran the Countdown recipe with both reward modes on `Qwen3-4B-Instruct-2507`
-    (LoRA rank 32, lr=1e-4, group_size=16, max_tokens=1024, 20 steps). Here are the
-    training curves from actual experiments.
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Step 2 — Define the CountdownEnv
+
+    Subclass `ProblemEnv` and implement four methods. We also override `step()` to
+    support partial-credit rewards — the base class only does binary scoring.
     """)
     return
 
 
 @app.cell
-def _():
-    # Metrics from actual training runs (see tinker_cookbook/recipes/countdown_rl/)
-    binary_metrics = [
-        {"step": 0, "correct": 0.340, "test": 0.600, "all_bad": 0.312, "avg_tokens": 520},
-        {"step": 1, "correct": 0.426, "test": None, "all_bad": 0.250, "avg_tokens": None},
-        {"step": 2, "correct": 0.504, "test": None, "all_bad": 0.125, "avg_tokens": None},
-        {"step": 3, "correct": 0.633, "test": None, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 4, "correct": 0.496, "test": None, "all_bad": 0.250, "avg_tokens": None},
-        {"step": 5, "correct": 0.855, "test": 0.690, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 6, "correct": 0.750, "test": None, "all_bad": 0.125, "avg_tokens": None},
-        {"step": 7, "correct": 0.863, "test": None, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 8, "correct": 0.633, "test": None, "all_bad": 0.125, "avg_tokens": None},
-        {"step": 9, "correct": 0.656, "test": None, "all_bad": 0.250, "avg_tokens": None},
-        {"step": 10, "correct": 0.555, "test": 0.720, "all_bad": 0.250, "avg_tokens": None},
-        {"step": 11, "correct": 0.820, "test": None, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 12, "correct": 0.824, "test": None, "all_bad": 0.125, "avg_tokens": None},
-        {"step": 13, "correct": 0.836, "test": None, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 14, "correct": 0.742, "test": None, "all_bad": 0.188, "avg_tokens": None},
-        {"step": 15, "correct": 0.609, "test": 0.720, "all_bad": 0.250, "avg_tokens": None},
-        {"step": 16, "correct": 0.781, "test": None, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 17, "correct": 0.797, "test": None, "all_bad": 0.125, "avg_tokens": None},
-        {"step": 18, "correct": 0.730, "test": None, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 19, "correct": 0.797, "test": None, "all_bad": 0.188, "avg_tokens": None},
-    ]
+def _(
+    ProblemEnv,
+    evaluate_expression,
+    extract_boxed,
+    get_text_content,
+    re,
+    tinker,
+):
+    class CountdownEnv(ProblemEnv):
+        """Single-turn env: reach the target using arithmetic on the given numbers."""
 
-    partial_metrics = [
-        {"step": 0, "correct": 0.352, "test": 0.550, "all_bad": 0.375, "avg_tokens": 523},
-        {"step": 1, "correct": 0.430, "test": None, "all_bad": 0.188, "avg_tokens": None},
-        {"step": 2, "correct": 0.551, "test": None, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 3, "correct": 0.648, "test": None, "all_bad": 0.125, "avg_tokens": None},
-        {"step": 4, "correct": 0.539, "test": None, "all_bad": 0.188, "avg_tokens": None},
-        {"step": 5, "correct": 0.930, "test": 0.710, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 6, "correct": 0.742, "test": None, "all_bad": 0.125, "avg_tokens": None},
-        {"step": 7, "correct": 0.844, "test": None, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 8, "correct": 0.691, "test": None, "all_bad": 0.188, "avg_tokens": None},
-        {"step": 9, "correct": 0.703, "test": None, "all_bad": 0.188, "avg_tokens": None},
-        {"step": 10, "correct": 0.578, "test": 0.760, "all_bad": 0.188, "avg_tokens": None},
-        {"step": 11, "correct": 0.844, "test": None, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 12, "correct": 0.750, "test": None, "all_bad": 0.125, "avg_tokens": None},
-        {"step": 13, "correct": 0.883, "test": None, "all_bad": 0.000, "avg_tokens": None},
-        {"step": 14, "correct": 0.742, "test": None, "all_bad": 0.188, "avg_tokens": None},
-        {"step": 15, "correct": 0.645, "test": 0.750, "all_bad": 0.250, "avg_tokens": None},
-        {"step": 16, "correct": 0.773, "test": None, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 17, "correct": 0.750, "test": None, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 18, "correct": 0.691, "test": None, "all_bad": 0.062, "avg_tokens": None},
-        {"step": 19, "correct": 0.766, "test": None, "all_bad": 0.125, "avg_tokens": None},
-    ]
-    return binary_metrics, partial_metrics
+        def __init__(self, target, nums, renderer, convo_prefix=None, use_partial=True):
+            super().__init__(renderer, convo_prefix)
+            self.target = target
+            self.nums = nums
+            self.use_partial = use_partial
+
+        def get_question(self) -> str:
+            nums_str = ", ".join(str(n) for n in self.nums)
+            return (
+                f"Using the numbers [{nums_str}], create an arithmetic expression "
+                f"that equals {self.target}. You can use +, -, *, / and each number "
+                f"at most once. Put your final expression in \\boxed{{}}."
+            )
+
+        def check_answer(self, sample_str: str) -> bool:
+            expr = extract_boxed(sample_str)
+            if expr is None:
+                return False
+            correct, _ = evaluate_expression(expr, self.nums, self.target)
+            return correct
+
+        def check_format(self, sample_str: str) -> bool:
+            return extract_boxed(sample_str) is not None
+
+        def get_reference_answer(self) -> str:
+            return f"target={self.target}, nums={self.nums}"
+
+        async def step(self, action, *, extra=None):
+            """Score with partial credit when use_partial=True."""
+            if not self.use_partial:
+                return await super().step(action, extra=extra)
+
+            # Parse the model's response
+            message, parse_success = self.renderer.parse_response(action)
+            content = get_text_content(message)
+            correct_format = float(parse_success) and float(self.check_format(content))
+            correct_answer = float(self.check_answer(content))
+
+            # Partial reward: grade proximity to target
+            expr = extract_boxed(content)
+            if expr is not None and not correct_answer:
+                _, partial_score = evaluate_expression(expr, self.nums, self.target)
+            else:
+                partial_score = 1.0 if correct_answer else 0.0
+
+            reward_value = partial_score if not correct_answer else 1.0
+            total_reward = self.format_coef * (correct_format - 1) + reward_value
+
+            from tinker_cookbook.rl.types import StepResult
+
+            return StepResult(
+                reward=total_reward,
+                episode_done=True,
+                next_observation=tinker.ModelInput.empty(),
+                next_stop_condition=self.stop_condition,
+                metrics={
+                    "format": correct_format,
+                    "correct": correct_answer,
+                    "partial_reward": partial_score,
+                },
+            )
+
+    # Quick check
+    print("CountdownEnv methods: get_question, check_answer, check_format, step")
+    print()
+    print("Example question for target=98, nums=[44, 19, 35]:")
+    print(f"  Using the numbers [44, 19, 35], create an arithmetic expression ...")
+    print(f"  ... that equals 98. Put your final expression in \\boxed{{}}.")
+    return (CountdownEnv,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Test the env manually
+
+    Before training, verify the reward function works by feeding it real token sequences.
+    """)
+    return
 
 
 @app.cell
-def _(binary_metrics, partial_metrics, plt):
-    _fig1, _axes = plt.subplots(1, 2, figsize=(14, 5))
+async def _(CountdownEnv, get_renderer, get_tokenizer, tinker):
+    MODEL_NAME = "Qwen/Qwen3-4B-Instruct-2507"
+    _service_client = tinker.ServiceClient()
+    _tokenizer = get_tokenizer(MODEL_NAME)
+    _renderer = get_renderer("qwen3_instruct", _tokenizer)
 
-    # Left plot: training accuracy
-    _ax_left = _axes[0]
-    _ax_left.plot(
-        [m["step"] for m in binary_metrics],
-        [m["correct"] for m in binary_metrics],
-        "o-", label="Binary reward", alpha=0.8,
+    # Test with a correct response
+    _env = CountdownEnv(13, [3, 7, 2], _renderer, use_partial=True)
+    _ob, _stop = await _env.initial_observation()
+
+    _good = _tokenizer.encode("3 * 2 + 7 = 13. \\boxed{3 * 2 + 7}")
+    _result = await _env.step(_good)
+    print(f"Correct answer:  reward={_result.reward:.3f}  metrics={_result.metrics}")
+
+    # Test with a wrong but close answer
+    _env2 = CountdownEnv(13, [3, 7, 2], _renderer, use_partial=True)
+    await _env2.initial_observation()
+    _bad = _tokenizer.encode("3 + 7 = 10. \\boxed{3 + 7}")
+    _result2 = await _env2.step(_bad)
+    print(f"Wrong but close: reward={_result2.reward:.3f}  metrics={_result2.metrics}")
+
+    # Test with no boxed answer
+    _env3 = CountdownEnv(13, [3, 7, 2], _renderer, use_partial=True)
+    await _env3.initial_observation()
+    _none = _tokenizer.encode("I'm not sure how to solve this.")
+    _result3 = await _env3.step(_none)
+    print(f"No answer:       reward={_result3.reward:.3f}  metrics={_result3.metrics}")
+    return MODEL_NAME, _renderer, _service_client, _tokenizer
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Step 3 — Build the dataset
+
+    `RLDataset.get_batch()` returns a list of `ProblemGroupBuilder`s — one per problem.
+    Each builder creates `group_size` copies of the env for GRPO rollouts.
+
+    We load problems from [Jiayi-Pan/Countdown-Tasks-3to4](https://huggingface.co/datasets/Jiayi-Pan/Countdown-Tasks-3to4)
+    (490K problems with 3–4 numbers each).
+    """)
+    return
+
+
+@app.cell
+def _(
+    CountdownEnv,
+    EnvGroupBuilder,
+    ProblemGroupBuilder,
+    RLDataset,
+    Sequence,
+    math,
+    partial,
+    _renderer,
+):
+    from datasets import load_dataset
+
+    class CountdownDataset(RLDataset):
+        def __init__(self, data, batch_size, group_size, renderer, use_partial=True):
+            self.data = data
+            self.batch_size = batch_size
+            self.group_size = group_size
+            self.renderer = renderer
+            self.use_partial = use_partial
+            # Fewshot prefix to teach the model the expected format
+            self.convo_prefix = [
+                {
+                    "role": "user",
+                    "content": (
+                        "Using the numbers [3, 7, 2], create an arithmetic expression "
+                        "that equals 13. You can use +, -, *, / and each number at most "
+                        "once. Put your final expression in \\boxed{}."
+                    ),
+                },
+                {
+                    "role": "assistant",
+                    "content": "3 * 2 = 6, 6 + 7 = 13. Yes!\n\\boxed{3 * 2 + 7}",
+                },
+            ]
+
+        def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
+            start = index * self.batch_size
+            end = min(start + self.batch_size, len(self.data))
+            return [
+                ProblemGroupBuilder(
+                    env_thunk=partial(
+                        CountdownEnv,
+                        row["target"],
+                        row["nums"],
+                        self.renderer,
+                        convo_prefix=self.convo_prefix,
+                        use_partial=self.use_partial,
+                    ),
+                    num_envs=self.group_size,
+                    dataset_name="countdown",
+                )
+                for row in self.data[start:end]
+            ]
+
+        def __len__(self) -> int:
+            return math.ceil(len(self.data) / self.batch_size)
+
+    # Load and split the dataset
+    _ds = load_dataset("Jiayi-Pan/Countdown-Tasks-3to4", split="train").shuffle(seed=42)
+    _train_data = [{"target": r["target"], "nums": r["nums"]} for r in _ds.select(range(800))]
+    _test_data = [{"target": r["target"], "nums": r["nums"]} for r in _ds.select(range(800, 900))]
+
+    GROUP_SIZE = 8
+    BATCH_SIZE = 16
+
+    train_dataset = CountdownDataset(_train_data, BATCH_SIZE, GROUP_SIZE, _renderer, use_partial=True)
+    test_dataset = CountdownDataset(_test_data, BATCH_SIZE, 1, _renderer, use_partial=False)
+
+    print(f"Train: {len(_train_data)} problems, {len(train_dataset)} batches")
+    print(f"Test:  {len(_test_data)} problems (binary reward for clean eval)")
+    print(f"Config: group_size={GROUP_SIZE}, batch_size={BATCH_SIZE}")
+    return BATCH_SIZE, GROUP_SIZE, CountdownDataset, test_dataset, train_dataset
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Step 4 — Train with GRPO
+
+    We run the standard rollout → advantage → train loop, tracking three metrics:
+
+    - **Correct**: fraction of completions that reach the target (the real success metric)
+    - **Useful groups**: fraction of groups where at least one completion differs in reward (provides GRPO signal)
+    - **Avg tokens**: average response length (does the model learn to be concise?)
+    """)
+    return
+
+
+@app.cell
+async def _(MODEL_NAME, _service_client, tinker):
+    training_client = await _service_client.create_lora_training_client_async(
+        base_model=MODEL_NAME, rank=32
     )
-    _ax_left.plot(
-        [m["step"] for m in partial_metrics],
-        [m["correct"] for m in partial_metrics],
-        "s-", label="Partial credit", alpha=0.8,
-    )
-    # Test accuracy markers
-    for _metrics, _marker, _color in [
-        (binary_metrics, "D", "C0"),
-        (partial_metrics, "D", "C1"),
-    ]:
-        _test_steps = [m["step"] for m in _metrics if m["test"] is not None]
-        _test_accs = [m["test"] for m in _metrics if m["test"] is not None]
-        _ax_left.plot(_test_steps, _test_accs, _marker, color=_color, markersize=10, zorder=5)
-    _ax_left.set_xlabel("Training step")
-    _ax_left.set_ylabel("Fraction correct")
-    _ax_left.set_title("Training accuracy (circles) and test accuracy (diamonds)")
-    _ax_left.legend()
-    _ax_left.grid(True, alpha=0.3)
-    _ax_left.set_ylim(0, 1.05)
 
-    # Right plot: fraction of all-bad groups
-    _ax_right = _axes[1]
-    _ax_right.plot(
-        [m["step"] for m in binary_metrics],
-        [m["all_bad"] for m in binary_metrics],
-        "o-", label="Binary reward", alpha=0.8,
-    )
-    _ax_right.plot(
-        [m["step"] for m in partial_metrics],
-        [m["all_bad"] for m in partial_metrics],
-        "s-", label="Partial credit", alpha=0.8,
-    )
-    _ax_right.set_xlabel("Training step")
-    _ax_right.set_ylabel("Fraction of groups")
-    _ax_right.set_title('"All-bad" groups (zero learning signal)')
-    _ax_right.legend()
-    _ax_right.grid(True, alpha=0.3)
-    _ax_right.set_ylim(-0.02, 0.5)
-    _ax_right.axhline(y=0, color="black", linewidth=0.5, linestyle="--")
+    MAX_TOKENS = 1024
+    TEMPERATURE = 1.0
+    N_STEPS = 10  # ~10 min with 16 problems/step, group_size=8
+    _lr = 1e-4
+    adam_params = tinker.AdamParams(learning_rate=_lr, beta1=0.9, beta2=0.95)
 
-    plt.tight_layout()
-    plt.show()
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ### What the plots show
-
-    **Left panel (accuracy):** Both reward modes improve rapidly, but partial credit
-    reaches **76% test accuracy** vs binary's **72%**. The gap comes from the early
-    steps where partial credit provides gradient signal that binary cannot.
-
-    **Right panel (all-bad groups):** At step 0, about 30–40% of groups have zero
-    learning signal — every completion in the group is wrong, so all advantages are zero.
-    With partial credit, these groups still contribute gradients because "close to correct"
-    scores higher than "completely wrong." By step 13, partial credit achieves **0%
-    all-bad groups**.
-
-    > **Key insight:** Partial credit doesn't change what "correct" means — it changes
-    > how much the model learns from *incorrect* attempts. A response that evaluates to
-    > 97 when the target is 98 is more useful training signal than one that evaluates to 5.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 3. Analyzing rollouts: what does the model actually do?
-
-    Looking at metrics alone can be misleading. Let's inspect actual model responses
-    at different training stages to understand *how* the model's behavior changes.
-
-    Below are real responses from the best experiment (partial reward, 2048 max tokens,
-    40 training steps, reaching **85% test accuracy**).
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ### Step 0 — Before training (66% correct)
-
-    **Correct response** (target=21, nums=[43, 30, 52], 299 tokens):
-    ```
-    Try subtraction first:
-    - 52 − 43 = 9
-    - 52 − 30 = 22 → close to 21
-    - 43 − 30 = 13
-
-    What about (52 − 43) = 9, and 30 − 9 = 21? Yes!
-    \boxed{30 - (52 - 43)}
-    ```
-
-    **Wrong response** (target=15, nums=[13, 14, 59, 39], **2048 tokens — truncated!**):
-    ```
-    Try: 59 − 39 = 20, 20 − 14 = 6, 6 + 13 = 19 → too big
-    Try: 39 − 14 = 25, 25 − 13 = 12 → not helpful
-    Try: 59 − 13 = 46, 46 − 39 = 7 → 7 + 14 = 21 → too big
-    Try: (59 + 13) = 72, (39 + 14) = 53, 72 − 53 = 19 → not 15
-    Try division: (59 − 39) = 20, (14 − 13) = 1, 20 ÷ 1 = 20 → ...
-    [TRUNCATED — ran out of tokens]
-    ```
-    The model enumerates every combination with verbose markdown, runs out of
-    tokens without ever finding `\boxed{}`.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ### Step 10 — Peak test accuracy (85% correct)
-
-    **The same hard problem now solved** (target=15, nums=[13, 14, 59, 39], 1010 tokens):
-    ```
-    Try differences between large numbers:
-    59 − 39 = 20, 59 − 14 = 45, 14 − 13 = 1 ...
-    Now try division: 39 / 13 = 3
-    What about: 14 + 3 = 17 → no
-    (59 − 39) / (14 − 13) = 20 → no
-    59 − (39 + 14 - 13) = 19 → no
-    Try: 59 - 14 = 45, 45 / (39 / 13) = 45/3 = 15 → YES!
-    \boxed{(59 - 14) / (39 / 13)}
-    ```
-
-    Two key changes after training:
-    1. **More strategic search** — the model tries division early instead of exhaustive subtraction
-    2. **Fewer dead ends** — it prunes unpromising paths faster
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ### The conciseness effect
-
-    One of the most striking things GRPO learns is **brevity**. The model discovers on
-    its own that shorter responses are better — not because we reward brevity, but because
-    shorter correct responses beat truncated incorrect ones within a group.
-    """)
-    return
+    print(f"Model: {MODEL_NAME}, LoRA rank 32, lr={_lr}")
+    print(f"Max tokens: {MAX_TOKENS}, temperature: {TEMPERATURE}")
+    print(f"Training for {N_STEPS} steps...")
+    return MAX_TOKENS, N_STEPS, TEMPERATURE, adam_params, training_client
 
 
 @app.cell
-def _(plt):
-    # Token length data from the 40-step experiment (partial, 2048 tokens)
-    steps_40 = list(range(40))
-    avg_tokens_40 = [
-        1116, 866, 892, 776, 1087, 540, 752, 623, 877, 796,
-        1039, 664, 717, 573, 800, 846, 712, 773, 701, 885,
-        1137, 664, 802, 512, 353, 1016, 961, 789, 776, 741,
-        811, 523, 765, 752, 996, 972, 618, 901, 494, 979,
-    ]
-    correct_40 = [
-        0.391, 0.465, 0.555, 0.684, 0.551, 0.914, 0.801, 0.914, 0.746, 0.719,
-        0.660, 0.891, 0.809, 0.902, 0.816, 0.734, 0.828, 0.816, 0.863, 0.766,
-        0.605, 0.809, 0.801, 0.965, 0.984, 0.762, 0.699, 0.828, 0.789, 0.840,
-        0.793, 0.883, 0.785, 0.797, 0.672, 0.668, 0.840, 0.758, 0.938, 0.648,
-    ]
-
-    _fig2, _ax_tok = plt.subplots(figsize=(12, 5))
-
-    _color1 = "C0"
-    _ax_tok.plot(steps_40, avg_tokens_40, "o-", color=_color1, alpha=0.7, markersize=4)
-    _ax_tok.set_xlabel("Training step")
-    _ax_tok.set_ylabel("Avg response tokens", color=_color1)
-    _ax_tok.tick_params(axis="y", labelcolor=_color1)
-    _ax_tok.set_ylim(200, 1300)
-
-    _ax_acc = _ax_tok.twinx()
-    _color2 = "C1"
-    _ax_acc.plot(steps_40, correct_40, "s-", color=_color2, alpha=0.7, markersize=4)
-    _ax_acc.set_ylabel("Train accuracy", color=_color2)
-    _ax_acc.tick_params(axis="y", labelcolor=_color2)
-    _ax_acc.set_ylim(0.2, 1.05)
-
-    _ax_tok.set_title("GRPO learns conciseness: tokens decrease as accuracy increases")
-    _ax_tok.grid(True, alpha=0.2)
-    _fig2.tight_layout()
-    plt.show()
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    Average response length drops from **~1100 tokens to ~500 tokens** over training,
-    while accuracy climbs from 39% to 90%+. The model learns that verbose
-    chain-of-thought with markdown formatting wastes tokens that could be used for
-    finding the answer.
-
-    No length penalty was added — this is **emergent behavior from GRPO**. Within each
-    group, a 300-token correct response gets reward 1.0, while a 2048-token truncated
-    attempt gets 0.0. The advantage signal naturally pushes the policy toward conciseness.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 4. Failure analysis: what remains hard?
-
-    At 85% test accuracy, we can ask: **what do the remaining 15% of failures look like?**
-    This is crucial for deciding what to improve next.
-    """)
-    return
-
-
-@app.cell
-def _(plt):
-    # From analyzing step-20 eval rollouts of the best model
-    # 200 test problems, 160 correct, 40 wrong
-    categories = ["Correct\n(within budget)", "Truncated\n(ran out of tokens)", "Wrong answer\n(within budget)"]
-    counts = [160, 39, 1]
-    colors = ["#2ecc71", "#e74c3c", "#f39c12"]
-
-    _fig3, _ax_bar = plt.subplots(figsize=(7, 4))
-    _bars = _ax_bar.bar(categories, counts, color=colors, edgecolor="white", linewidth=2)
-    for _bar, _count in zip(_bars, counts):
-        _ax_bar.text(
-            _bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 3,
-            str(_count), ha="center", fontweight="bold", fontsize=14,
+async def _(
+    MAX_TOKENS,
+    N_STEPS,
+    TEMPERATURE,
+    adam_params,
+    assemble_training_data,
+    compute_advantages,
+    do_group_rollout_and_filter_constant_reward,
+    tinker,
+    train_dataset,
+    training_client,
+):
+    def _remove_mask(datum: tinker.Datum) -> tinker.Datum:
+        return tinker.Datum(
+            model_input=datum.model_input,
+            loss_fn_inputs={k: v for k, v in datum.loss_fn_inputs.items() if k != "mask"},
         )
-    _ax_bar.set_ylabel("Number of test problems")
-    _ax_bar.set_title("Failure analysis at 85% test accuracy (200 problems)")
-    _ax_bar.set_ylim(0, 200)
-    _ax_bar.grid(True, alpha=0.2, axis="y")
-    plt.tight_layout()
+
+    metrics_history = []
+
+    for _step in range(N_STEPS):
+        _batch_index = _step % len(train_dataset)
+        _env_group_builders = train_dataset.get_batch(_batch_index)
+
+        # 1. Save weights and get sampling client for current policy
+        _sampling_client = await training_client.save_weights_and_get_sampling_client_async()
+
+        # 2. Rollout each group
+        _trajectory_groups = []
+        _n_all_bad = 0
+        _all_rewards = []
+        _all_token_lens = []
+
+        for _builder in _env_group_builders:
+            _tg = await do_group_rollout_and_filter_constant_reward(
+                sampling_client=_sampling_client,
+                env_group_builder=_builder,
+                max_tokens=MAX_TOKENS,
+                temperature=TEMPERATURE,
+                do_remove_constant_reward_groups=False,  # Keep all groups for metrics
+                enable_logging=False,
+            )
+            if _tg is not None:
+                _rewards = _tg.get_total_rewards()
+                _all_rewards.extend(_rewards)
+                for _traj in _tg.trajectories_G:
+                    _all_token_lens.append(
+                        sum(len(t.action) for t in _traj.transitions)
+                    )
+                # Check if this group has variance (useful for GRPO)
+                if len(set(round(r, 6) for r in _rewards)) > 1:
+                    _trajectory_groups.append(_tg)
+                else:
+                    _n_all_bad += 1
+
+        _n_total_groups = len(_env_group_builders)
+        _n_useful = len(_trajectory_groups)
+        _frac_correct = sum(1 for r in _all_rewards if r >= 0.9) / max(len(_all_rewards), 1)
+        _avg_tokens = sum(_all_token_lens) / max(len(_all_token_lens), 1)
+
+        # 3. Compute advantages and train (skip if no useful groups)
+        _n_datums = 0
+        if _trajectory_groups:
+            _advantages = compute_advantages(_trajectory_groups)
+            _datums, _ = assemble_training_data(_trajectory_groups, _advantages)
+            _n_datums = len(_datums)
+
+            _fwd = await training_client.forward_backward_async(
+                [_remove_mask(d) for d in _datums], loss_fn="importance_sampling"
+            )
+            _opt = await training_client.optim_step_async(adam_params)
+            await _fwd.result_async()
+            await _opt.result_async()
+
+        metrics_history.append({
+            "step": _step,
+            "correct": _frac_correct,
+            "useful_groups": _n_useful / _n_total_groups,
+            "avg_tokens": _avg_tokens,
+            "n_datums": _n_datums,
+        })
+
+        print(
+            f"Step {_step:2d} | correct: {_frac_correct:.1%} | "
+            f"useful groups: {_n_useful}/{_n_total_groups} | "
+            f"avg tokens: {_avg_tokens:.0f} | datums: {_n_datums}"
+        )
+    return (metrics_history,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Step 5 — Visualize training dynamics
+
+    Three panels showing how GRPO shapes the model's behavior:
+    """)
+    return
+
+
+@app.cell
+def _(metrics_history, plt):
+    _fig, (_ax1, _ax2, _ax3) = plt.subplots(1, 3, figsize=(16, 4.5))
+
+    _steps = [m["step"] for m in metrics_history]
+
+    # Panel 1: accuracy
+    _ax1.plot(_steps, [m["correct"] for m in metrics_history], "o-", color="#2563eb", linewidth=2)
+    _ax1.set_xlabel("Training step")
+    _ax1.set_ylabel("Fraction correct")
+    _ax1.set_title("Success rate")
+    _ax1.set_ylim(0, 1.05)
+    _ax1.grid(True, alpha=0.3)
+
+    # Panel 2: useful groups
+    _ax2.plot(_steps, [m["useful_groups"] for m in metrics_history], "s-", color="#10b981", linewidth=2)
+    _ax2.set_xlabel("Training step")
+    _ax2.set_ylabel("Fraction of groups")
+    _ax2.set_title("Useful groups (have reward variance)")
+    _ax2.set_ylim(0, 1.05)
+    _ax2.grid(True, alpha=0.3)
+
+    # Panel 3: token length
+    _ax3.plot(_steps, [m["avg_tokens"] for m in metrics_history], "^-", color="#f59e0b", linewidth=2)
+    _ax3.set_xlabel("Training step")
+    _ax3.set_ylabel("Avg response tokens")
+    _ax3.set_title("Response length (conciseness)")
+    _ax3.grid(True, alpha=0.3)
+
+    _fig.suptitle("GRPO Training Dynamics (partial credit reward)", fontweight="bold", y=1.02)
+    _fig.tight_layout()
     plt.show()
     return
 
@@ -472,16 +592,82 @@ def _(plt):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    **39 out of 40 failures are truncations** — the model ran out of 2048 tokens before
-    finding an answer. Only **1 failure** was a wrong answer within the token budget.
+    ## Step 6 — Evaluate on held-out problems
 
-    This means the model has essentially *learned to solve the Countdown task*. The
-    remaining bottleneck is purely computational: some problems require exploring many
-    combinations, and even 2048 tokens isn't always enough.
+    Sample from the trained model on problems it never saw during training.
+    We use greedy decoding (temperature=0) and binary grading.
+    """)
+    return
 
-    Correct responses average **293 tokens**. Wrong responses are **all exactly 2048 tokens**
-    (the maximum). There is no middle ground — the model either finds the answer quickly
-    or exhausts its budget trying.
+
+@app.cell
+async def _(
+    MAX_TOKENS,
+    _renderer,
+    _tokenizer,
+    extract_boxed,
+    evaluate_expression,
+    get_text_content,
+    test_dataset,
+    tinker,
+    training_client,
+):
+    _eval_client = await training_client.save_weights_and_get_sampling_client_async()
+
+    _batch = test_dataset.get_batch(0)  # first 16 test problems
+    _n_correct = 0
+    _n_total = 0
+
+    for _builder in _batch[:16]:
+        _envs = await _builder.make_envs()
+        _env = _envs[0]
+        _ob, _stop = await _env.initial_observation()
+
+        _result = await _eval_client.sample_async(
+            prompt=_ob,
+            num_samples=1,
+            sampling_params=tinker.SamplingParams(
+                max_tokens=MAX_TOKENS, temperature=0.0, stop=_stop
+            ),
+        )
+        _tokens = _result.sequences[0].tokens
+        _msg, _ = _renderer.parse_response(_tokens)
+        _content = get_text_content(_msg)
+        _expr = extract_boxed(_content)
+        _is_correct = False
+        if _expr is not None:
+            _is_correct, _ = evaluate_expression(_expr, _env.nums, _env.target)
+
+        _n_total += 1
+        if _is_correct:
+            _n_correct += 1
+
+        _status = "PASS" if _is_correct else "FAIL"
+        _preview = _content[:120].replace("\n", " ")
+        print(f"[{_status}] target={_env.target}, nums={_env.nums}")
+        print(f"       {_preview}...")
+        print()
+
+    print(f"Test accuracy: {_n_correct}/{_n_total} ({_n_correct/_n_total:.0%})")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## What we learned
+
+    - **Partial credit** creates reward variance within groups that would otherwise be
+      "all-bad" (every completion wrong, zero advantage, zero gradient). This is the
+      key mechanism: GRPO needs *within-group* differences to learn.
+
+    - **Token budget matters**: if the model runs out of tokens before writing `\boxed{}`,
+      it gets zero reward even if the reasoning was correct. A generous budget lets the
+      model explore; GRPO then teaches it to be concise (response length drops naturally).
+
+    - **Look at your rollouts**: metrics tell you *what* is happening, rollouts tell
+      you *why*. In our experiments, 100% of remaining failures at 85% accuracy were
+      token truncations — not wrong answers.
     """)
     return
 
@@ -489,97 +675,26 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 5. The full hyperparameter sweep
+    ## Other settings to try
 
-    We tested 8 configurations to understand which choices matter most:
+    The recipe at `tinker_cookbook/recipes/countdown_rl/` supports several configurations.
+    Here is what we found from a sweep of 8 experiments:
 
-    | Config | Best Test Acc | Key Finding |
-    |---|---|---|
-    | binary, 512 tokens | 68% | Baseline |
-    | binary, 1024 tokens | 72% | Token budget matters (+4%) |
-    | **partial, 1024 tokens** | **76%** | **Partial reward matters (+4%)** |
-    | partial, group_size=32 | 76% | Eliminates all-bad groups, same peak |
-    | partial, KL=0.02 | 70% | KL penalty hurts this task |
-    | partial, no fewshot | 72% | Fewshot prefix is critical |
-    | partial, temp=0.7 | 78.5% | Lower temperature hurts exploration |
-    | **partial, 2048 tokens** | **85%** | **Token budget is the biggest lever** |
+    | Change | Effect |
+    |---|---|
+    | `reward_mode=binary` | −4% test accuracy (fewer useful groups) |
+    | `max_tokens=2048` | +9% test accuracy (fewer truncations) |
+    | `max_tokens=512` | −8% test accuracy (many truncations) |
+    | `group_size=32` | Eliminates all-bad groups, same peak accuracy |
+    | `kl_penalty_coef=0.02` | −6% (too conservative for this task) |
+    | `include_fewshot=False` | −4% (model struggles with format cold-start) |
+    | `temperature=0.7` | −1.5% (less exploration hurts GRPO) |
 
-    Three takeaways:
-
-    1. **Token budget is #1** — going from 512 to 2048 added 17 percentage points
-    2. **Reward shaping is #2** — partial credit added 4% by improving gradient utilization
-    3. **Don't over-regularize** — KL penalty and low temperature both hurt for this task,
-       where the base model's distribution is already reasonable
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 6. Running the recipe
-
-    To reproduce these results:
-
+    Run the full recipe with:
     ```bash
-    # Quick experiment (~20 min, 20 steps)
     python -m tinker_cookbook.recipes.countdown_rl.train \
-        n_train=1600 n_test=100 eval_every=5 max_steps=20
-
-    # Full training (~2.5 hours, 40 steps, best config)
-    python -m tinker_cookbook.recipes.countdown_rl.train \
-        n_train=3200 n_test=200 max_steps=40
-
-    # Compare binary vs partial reward
-    python -m tinker_cookbook.recipes.countdown_rl.train \
-        reward_mode=binary max_steps=20 \
-        log_path=~/tinker-experiments/countdown_rl/exp_binary
-
-    python -m tinker_cookbook.recipes.countdown_rl.train \
-        reward_mode=partial max_steps=20 \
-        log_path=~/tinker-experiments/countdown_rl/exp_partial
+        max_tokens=2048 n_train=3200 n_test=200 max_steps=40
     ```
-
-    Training logs (metrics, rollout transcripts, HTML reports) are written to `~/tinker-experiments/countdown_rl/` by default.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Key concepts recap
-
-    - **Reward shaping** doesn't change what's correct — it changes how much the model
-      learns from *incorrect* attempts. Partial credit turns dead groups into useful signal.
-
-    - **All-bad groups** are the enemy of GRPO. When every completion in a group gets
-      the same reward, the advantage is zero everywhere and no learning happens.
-      Design rewards to create *variance within groups*.
-
-    - **Token budget** is an often-overlooked hyperparameter. If the model's
-      chain-of-thought reasoning gets truncated, it can't write `\boxed{}`, and
-      correct reasoning produces zero reward. Generous budgets let the model explore
-      freely; GRPO then teaches it to be concise.
-
-    - **Look at your rollouts.** Metrics tell you *what* is happening; rollouts tell
-      you *why*. The discovery that 100% of failures were truncations — not wrong
-      answers — changed the entire optimization strategy.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Next steps
-
-    - **Custom environments**: See `tinker_cookbook/recipes/countdown_rl/countdown_env.py`
-      for the full `ProblemEnv` implementation with partial rewards
-    - **RL hyperparameters**: Tutorial `402_rl_hyperparams.py` covers KL penalty,
-      group size, and advantage normalization in depth
-    - **Multi-turn RL**: The `harbor_rl` and `multiplayer_rl` recipes show how to
-      build environments with multiple interaction steps
     """)
     return
 
