@@ -23,7 +23,7 @@ from tinker.types import LossFnType
 
 from tinker_cookbook import checkpoint_utils, cli_utils
 from tinker_cookbook.recipes.countdown_rl.countdown_env import CountdownDatasetBuilder
-from tinker_cookbook.rl.train import Config, StreamMinibatchConfig, main
+from tinker_cookbook.rl.train import Config, KLReferenceConfig, StreamMinibatchConfig, main
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +120,9 @@ async def cli_main(cli_config: CLIConfig):
         base_url=cli_config.base_url,
         load_checkpoint_path=cli_config.load_checkpoint_path,
         kl_penalty_coef=cli_config.kl_penalty_coef,
+        kl_reference_config=KLReferenceConfig(base_model=cli_config.model_name)
+        if cli_config.kl_penalty_coef > 0
+        else None,
         eval_every=cli_config.eval_every,
         save_every=cli_config.save_every,
         stream_minibatch_config=StreamMinibatchConfig(
