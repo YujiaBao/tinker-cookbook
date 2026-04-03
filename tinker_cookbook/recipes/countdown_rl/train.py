@@ -31,7 +31,7 @@ class CLIConfig:
     """Command-line configuration for Countdown RL training."""
 
     # Model configuration
-    model_name: str = "Qwen/Qwen3-4B"
+    model_name: str = "Qwen/Qwen3-4B-Instruct-2507"
     lora_rank: int = 32
     renderer_name: str | None = None
     load_checkpoint_path: str | None = None
