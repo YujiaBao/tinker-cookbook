@@ -461,8 +461,9 @@ async def save_checkpoint_async(
     logger.info(f"Saved checkpoints: {paths}")
 
     record = CheckpointRecord.from_dict({"name": name, **loop_state, **paths})
+    line = json.dumps(record.to_dict()) + "\n"
     with open(Path(log_path) / "checkpoints.jsonl", "a") as f:
-        f.write(json.dumps(record.to_dict()) + "\n")
+        f.write(line)
 
     return paths
 
