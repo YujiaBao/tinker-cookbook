@@ -2,6 +2,7 @@ import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-do
 import { RunListPage } from './pages/RunListPage';
 import { RunDetailPage } from './pages/RunDetailPage';
 import { RolloutDetailPage } from './pages/RolloutDetailPage';
+import { CompareRunsPage } from './pages/CompareRunsPage';
 import { EvalPage } from './pages/EvalPage';
 import { EvalRunDetailPage } from './pages/EvalRunDetailPage';
 import { EvalTrajectoryPage } from './pages/EvalTrajectoryPage';
@@ -32,6 +33,7 @@ function App() {
         <main className="app-main">
           <Routes>
             <Route path="/" element={<RunListPage />} />
+            <Route path="/compare" element={<CompareRunsPage />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
             <Route path="/runs/:runId/iterations/:iteration/rollouts/:groupIdx/:trajIdx" element={<RolloutDetailPage />} />
             <Route path="/eval" element={<EvalPage />} />
