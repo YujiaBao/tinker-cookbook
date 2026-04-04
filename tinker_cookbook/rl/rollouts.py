@@ -12,7 +12,6 @@ import tinker
 from tinker_cookbook.completers import TinkerTokenCompleter, TokenCompleter
 from tinker_cookbook.exceptions import AllTrajectoriesFailedError
 from tinker_cookbook.rl.rollout_retry_queue import RetryReason, RolloutRetryQueue
-from tinker_cookbook.utils import trace
 from tinker_cookbook.rl.rollout_strategy import FailFast, RolloutStrategy
 from tinker_cookbook.rl.types import (
     ActionExtra,
@@ -477,7 +476,7 @@ async def _do_group_rollout_and_filter_constant_reward_impl(
     except Exception as e:
         if not strategy.catches_group_errors:
             raise
-        logger.warning(f"Rollout error ({type(e).__name__}), skipping group: {e}")
+        logger.warning("Rollout error (%s), skipping group: %s", type(e).__name__, e)
         if retry_queue is not None:
             with trace.scope_span_sync("retry_queue_store"):
                 retry_queue.enqueue(

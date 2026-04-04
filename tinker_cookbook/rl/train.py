@@ -445,6 +445,22 @@ class AsyncConfig:
 
 
 @chz.chz
+class RetryQueueConfig:
+    """Configuration for the rollout retry queue.
+
+    Args:
+        max_age_steps: Maximum age in training steps before entries are evicted.
+        max_attempts: Maximum retry attempts before an entry is discarded.
+        max_size: Maximum number of entries in the queue.
+        max_entries_per_step: Maximum entries to inject per training step.
+    """
+    max_age_steps: int = 3
+    max_attempts: int = 3
+    max_size: int = 1000
+    max_entries_per_step: int | None = None
+
+
+@chz.chz
 class Config:
     """Configuration for RL training.
 
@@ -559,20 +575,11 @@ class Config:
     # -------------------------------------------------------------------------
     # Retry queue for failed rollouts (advanced)
     # -------------------------------------------------------------------------
-    # When enabled, rollout groups that fail (errors, all-failed) are queued
+    # When not None, rollout groups that fail (errors, all-failed) are queued
     # so their EnvGroupBuilder can be retried in later iterations.
     # Note: constant-reward groups are NOT retried (same problem + model +
     # temperature will likely produce constant rewards again).
-    retry_queue_enabled: bool = False
-    # Maximum age (in training steps) for a queued entry to be retried.
-    retry_queue_max_age_steps: int = 3
-    # Maximum number of retry attempts per entry before eviction.
-    retry_queue_max_attempts: int = 3
-    # Maximum number of entries the retry queue can hold.
-    retry_queue_max_size: int = 1000
-    # Maximum number of retry entries to inject per training step.
-    # None means no cap (all eligible entries are injected).
-    retry_queue_max_entries_per_step: int | None = None
+    retry_queue_config: RetryQueueConfig | None = None
 
 
 @trace.scope
@@ -728,13 +735,13 @@ async def do_sync_training_with_stream_minibatch(
         config.ttl_seconds,
     )
 
-    # Create retry queue if enabled
+    # Create retry queue if configured
     retry_queue: RolloutRetryQueue | None = (
         RolloutRetryQueue(
-            max_size=config.retry_queue_max_size,
-            max_attempts=config.retry_queue_max_attempts,
+            max_size=config.retry_queue_config.max_size,
+            max_attempts=config.retry_queue_config.max_attempts,
         )
-        if config.retry_queue_enabled
+        if config.retry_queue_config is not None
         else None
     )
 
@@ -779,8 +786,8 @@ async def do_sync_training_with_stream_minibatch(
                     with trace.scope_span_sync("retry_queue_retrieve"):
                         resumable = retry_queue.get_resumable(
                             current_step=i_batch,
-                            max_age_steps=config.retry_queue_max_age_steps,
-                            max_entries_per_step=config.retry_queue_max_entries_per_step,
+                            max_age_steps=config.retry_queue_config.max_age_steps,
+                            max_entries_per_step=config.retry_queue_config.max_entries_per_step,
                         )
                     if resumable:
                         logger.info(
@@ -798,7 +805,7 @@ async def do_sync_training_with_stream_minibatch(
                     with trace.scope_span_sync("retry_queue_evict"):
                         retry_queue.clear_expired(
                             current_step=i_batch,
-                            max_age_steps=config.retry_queue_max_age_steps,
+                            max_age_steps=config.retry_queue_config.max_age_steps,
                         )
                     _log_retry_queue_to_logtree(retry_queue, resumable)
 
@@ -1013,9 +1020,9 @@ async def do_async_training(
     # Retry queue is not supported in async mode: the decoupled worker/training
     # loops make it hard to inject retried entries without changing batch size
     # semantics.  Warn and disable rather than silently leaking memory.
-    if config.retry_queue_enabled:
+    if config.retry_queue_config is not None:
         logger.warning(
-            "retry_queue_enabled is not supported in async training mode — "
+            "retry_queue_config is not supported in async training mode — "
             "disabling retry queue. Use sync or streaming-minibatch mode instead."
         )
     retry_queue: RolloutRetryQueue | None = None
@@ -1804,13 +1811,13 @@ async def do_sync_training(
         config.ttl_seconds,
     )
 
-    # Create retry queue if enabled
+    # Create retry queue if configured
     retry_queue: RolloutRetryQueue | None = (
         RolloutRetryQueue(
-            max_size=config.retry_queue_max_size,
-            max_attempts=config.retry_queue_max_attempts,
+            max_size=config.retry_queue_config.max_size,
+            max_attempts=config.retry_queue_config.max_attempts,
         )
-        if config.retry_queue_enabled
+        if config.retry_queue_config is not None
         else None
     )
 
@@ -1840,8 +1847,8 @@ async def do_sync_training(
                 with trace.scope_span_sync("retry_queue_retrieve"):
                     resumable = retry_queue.get_resumable(
                         current_step=i_batch,
-                        max_age_steps=config.retry_queue_max_age_steps,
-                        max_entries_per_step=config.retry_queue_max_entries_per_step,
+                        max_age_steps=config.retry_queue_config.max_age_steps,
+                        max_entries_per_step=config.retry_queue_config.max_entries_per_step,
                     )
                 if resumable:
                     logger.info(
@@ -1860,7 +1867,7 @@ async def do_sync_training(
                 with trace.scope_span_sync("retry_queue_evict"):
                     retry_queue.clear_expired(
                         current_step=i_batch,
-                        max_age_steps=config.retry_queue_max_age_steps,
+                        max_age_steps=config.retry_queue_config.max_age_steps,
                     )
 
             # Initialize logtree trace for this iteration if logging is enabled
