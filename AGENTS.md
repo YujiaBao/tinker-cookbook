@@ -86,3 +86,65 @@ pytest tests/
 ```
 
 For debugging, shrink workloads via `n_batches`, `batch_size`, `group_size` in dataset builders.
+
+---
+
+## Tinker Chef — Training Dashboard
+
+Tinker Chef is a web dashboard for monitoring and analyzing training runs. Start it with:
+
+```bash
+tinker-chef serve /path/to/log_dir --port 8150
+```
+
+### REST API for agents
+
+When `tinker-chef serve` is running, agents can query training data via HTTP. All endpoints return JSON.
+
+**Runs:**
+```bash
+curl localhost:8150/api/runs                          # List all runs (status, training_type, model, steps)
+curl localhost:8150/api/runs/{run_id}                 # Full run detail including config
+curl localhost:8150/api/runs/{run_id}/config           # Training config (hyperparams, model, recipe)
+curl localhost:8150/api/runs/{run_id}/checkpoints      # Checkpoint records (name, step, final flag)
+curl localhost:8150/api/runs/{run_id}/iterations        # List iteration directories
+```
+
+**Metrics (scalar training curves):**
+```bash
+curl localhost:8150/api/runs/{run_id}/metrics          # All metrics (step, loss, reward, KL, timing...)
+curl localhost:8150/api/runs/{run_id}/metrics?keys=env/* # Filter by glob pattern
+curl localhost:8150/api/runs/{run_id}/metrics/keys      # List all metric key names
+```
+
+**Rollouts (per-trajectory data):**
+```bash
+curl localhost:8150/api/runs/{run_id}/iterations/{iter}/rollouts              # List rollout summaries
+curl localhost:8150/api/runs/{run_id}/iterations/{iter}/rollouts?tag=math     # Filter by tag
+curl localhost:8150/api/runs/{run_id}/iterations/{iter}/rollouts?min_reward=0.5  # Filter by reward
+curl localhost:8150/api/runs/{run_id}/iterations/{iter}/rollouts/{group}/{traj}  # Full rollout with steps
+curl localhost:8150/api/runs/{run_id}/iterations/{iter}/logtree               # Logtree with conversations
+```
+
+**Timing (profiling):**
+```bash
+curl localhost:8150/api/runs/{run_id}/timing            # Raw timing spans per step
+curl localhost:8150/api/runs/{run_id}/timing/flat        # All spans flattened with step annotation
+curl localhost:8150/api/runs/{run_id}/timing/concurrency/{step}  # Concurrency analysis for a step
+```
+
+**Eval benchmarks:**
+```bash
+curl localhost:8150/api/eval/runs                       # List eval runs
+curl localhost:8150/api/eval/runs/{eval_run_id}         # Eval run detail with benchmark results
+curl localhost:8150/api/eval/runs/{id}/{benchmark}/trajectories  # Eval trajectories
+curl localhost:8150/api/eval/runs/{id}/{benchmark}/trajectories/{idx}  # Single eval trajectory
+curl localhost:8150/api/eval/scores                     # Score matrix across all eval runs
+```
+
+**Key fields in responses:**
+- `RunInfo.status`: `"running"` (metrics updated <2min ago), `"completed"` (final checkpoint), `"idle"`
+- `RunInfo.training_type`: `"rl"`, `"sl"`, `"dpo"` (inferred from config)
+- `MetricRecord.step`: training step number
+- `RolloutSummary.total_reward`, `.tags`, `.num_steps`: per-trajectory summary
+- `TimingRecord.wall_start`, `.wall_end`: wall-clock times for concurrency analysis
