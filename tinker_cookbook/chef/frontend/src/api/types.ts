@@ -8,6 +8,9 @@ export interface RunInfo {
   has_checkpoints: boolean;
   has_timing: boolean;
   iteration_count: number;
+  status: string;  // "running" | "completed" | "idle"
+  last_updated: number | null;  // epoch seconds
+  training_type: string | null;  // "rl" | "sl" | "dpo"
   config_summary?: Record<string, unknown>;
   latest_step?: number;
   total_steps?: number;

@@ -4,10 +4,14 @@ import { api } from '../api/client';
 import { EvalSummaryPanel } from '../components/EvalSummaryPanel';
 import { MetricsPanel } from '../components/MetricsPanel';
 import { RolloutBrowser } from '../components/RolloutBrowser';
+import { RunOverviewPanel } from '../components/RunOverviewPanel';
 import { TimingPanel } from '../components/TimingPanel';
 import type { IterationInfo, RunInfo } from '../api/types';
 
-type Tab = 'metrics' | 'rollouts' | 'timing' | 'evals' | 'config';
+type Tab = 'overview' | 'metrics' | 'rollouts' | 'checkpoints' | 'timing' | 'config';
+
+const TYPE_LABELS: Record<string, string> = { rl: 'RL', sl: 'SFT', dpo: 'DPO' };
+const TYPE_COLORS: Record<string, string> = { rl: '#6366f1', sl: '#22c55e', dpo: '#f59e0b' };
 
 export function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>();
@@ -15,19 +19,13 @@ export function RunDetailPage() {
   const [iterations, setIterations] = useState<IterationInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<Tab>('metrics');
-  const [visitedTabs, setVisitedTabs] = useState<Set<Tab>>(new Set(['metrics']));
+  const [activeTab, setActiveTab] = useState<Tab>('overview');
+  const [visitedTabs, setVisitedTabs] = useState<Set<Tab>>(new Set(['overview']));
 
   useEffect(() => {
     if (!runId) return;
-    Promise.all([
-      api.getRun(runId),
-      api.listIterations(runId),
-    ])
-      .then(([runData, iters]) => {
-        setRun(runData);
-        setIterations(iters);
-      })
+    Promise.all([api.getRun(runId), api.listIterations(runId)])
+      .then(([runData, iters]) => { setRun(runData); setIterations(iters); })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, [runId]);
@@ -45,37 +43,40 @@ export function RunDetailPage() {
   const hasTiming = run.has_timing;
 
   const tabs: { id: Tab; label: string; disabled?: boolean }[] = [
+    { id: 'overview', label: 'Overview' },
     { id: 'metrics', label: 'Metrics' },
     { id: 'rollouts', label: 'Rollouts', disabled: !hasIterations },
+    { id: 'checkpoints', label: 'Checkpoints & Evals' },
     { id: 'timing', label: 'Timing', disabled: !hasTiming },
-    { id: 'evals', label: 'Evals' },
     { id: 'config', label: 'Config' },
   ];
 
   return (
     <div>
       <div className="breadcrumb">
-        <Link to="/">Runs</Link>
+        <Link to="/">Dashboard</Link>
         <span>/</span>
         <span>{runId}</span>
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.75rem' }}>
-        <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <h2 className="page-title">{runId}</h2>
-          {run.config_summary && (
-            <div style={{ marginTop: '0.25rem' }}>
-              {Object.entries(run.config_summary).map(([k, v]) => (
-                <span key={k} className="tag" style={{ marginRight: '0.375rem' }}>
-                  {k}: {String(v)}
-                </span>
-              ))}
-            </div>
+          {run.training_type && (
+            <span className="tag" style={{ background: `${TYPE_COLORS[run.training_type]}22`, color: TYPE_COLORS[run.training_type] }}>
+              {TYPE_LABELS[run.training_type]}
+            </span>
           )}
+          <span className="badge" style={{
+            background: run.status === 'running' ? 'rgba(34,197,94,0.15)' : run.status === 'completed' ? 'rgba(99,102,241,0.15)' : 'rgba(100,116,139,0.15)',
+            color: run.status === 'running' ? 'var(--success)' : run.status === 'completed' ? '#818cf8' : 'var(--text-muted)',
+          }}>
+            {run.status}
+          </span>
         </div>
-        <div className="text-muted" style={{ fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>
-          {run.total_steps != null && <span>{run.total_steps} steps</span>}
-          {run.iteration_count > 0 && <span> · {run.iteration_count} iters</span>}
+        <div className="text-muted" style={{ fontSize: '0.8125rem' }}>
+          {run.config_summary?.model_name as string ?? ''}
+          {run.total_steps != null && <span> · {run.total_steps} steps</span>}
         </div>
       </div>
 
@@ -93,17 +94,20 @@ export function RunDetailPage() {
         ))}
       </div>
 
+      <div style={{ display: activeTab === 'overview' ? 'block' : 'none' }}>
+        {visitedTabs.has('overview') && <RunOverviewPanel runId={runId} run={run} />}
+      </div>
       <div style={{ display: activeTab === 'metrics' ? 'block' : 'none' }}>
         {visitedTabs.has('metrics') && <MetricsPanel runId={runId} />}
       </div>
       <div style={{ display: activeTab === 'rollouts' ? 'block' : 'none' }}>
         {visitedTabs.has('rollouts') && <RolloutBrowser runId={runId} iterations={iterations} />}
       </div>
+      <div style={{ display: activeTab === 'checkpoints' ? 'block' : 'none' }}>
+        {visitedTabs.has('checkpoints') && <EvalSummaryPanel runId={runId} />}
+      </div>
       <div style={{ display: activeTab === 'timing' ? 'block' : 'none' }}>
         {visitedTabs.has('timing') && <TimingPanel runId={runId} />}
-      </div>
-      <div style={{ display: activeTab === 'evals' ? 'block' : 'none' }}>
-        {visitedTabs.has('evals') && <EvalSummaryPanel runId={runId} />}
       </div>
       <div style={{ display: activeTab === 'config' ? 'block' : 'none' }}>
         {visitedTabs.has('config') && <ConfigPanel config={run.config ?? {}} />}
@@ -114,7 +118,6 @@ export function RunDetailPage() {
 
 function ConfigPanel({ config }: { config: Record<string, unknown> }) {
   const [search, setSearch] = useState('');
-
   const configStr = JSON.stringify(config, null, 2);
   const lines = configStr.split('\n');
   const filtered = search
@@ -131,13 +134,9 @@ function ConfigPanel({ config }: { config: Record<string, unknown> }) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           style={{
-            padding: '0.25rem 0.5rem',
-            borderRadius: '4px',
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            fontSize: '0.75rem',
-            width: '180px',
+            padding: '0.25rem 0.5rem', borderRadius: '4px',
+            border: '1px solid var(--border)', background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)', fontSize: '0.75rem', width: '180px',
           }}
         />
       </div>
