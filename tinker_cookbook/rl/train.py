@@ -467,6 +467,12 @@ class Config:
     loss_fn: LossFnType = "importance_sampling"
     loss_fn_config: dict[str, Any] | None = None
 
+    # Algorithm registry names. When set, these override loss_fn/loss_fn_config
+    # and the default advantage computation with registered implementations.
+    # See tinker_cookbook.rl.algorithm_registry for available names.
+    advantage_name: str = "grpo"
+    policy_loss_name: str | None = None
+
     # Number of optimizer steps per training iteration.
     # Useful for very large batch sizes.
     num_substeps: int = 1
@@ -520,6 +526,28 @@ class Config:
 
     # Maximum number of training iterations. If None, train on the full dataset.
     max_steps: int | None = None
+
+
+def resolve_loss_fn(config: Config) -> tuple[LossFnType, dict[str, Any] | None]:
+    """Resolve the effective loss function and config from a :class:`Config`.
+
+    If ``config.policy_loss_name`` is set, the corresponding registered
+    policy loss configurator is used.  Otherwise, the explicit
+    ``config.loss_fn`` and ``config.loss_fn_config`` values are returned
+    unchanged.
+
+    Args:
+        config: RL training configuration.
+
+    Returns:
+        A ``(loss_fn, loss_fn_config)`` tuple ready for
+        :func:`train_step`.
+    """
+    if config.policy_loss_name is not None:
+        from tinker_cookbook.rl.algorithm_registry import get_policy_loss_config
+
+        return get_policy_loss_config(config.policy_loss_name)
+    return config.loss_fn, config.loss_fn_config
 
 
 @trace.scope
@@ -1290,6 +1318,7 @@ async def prepare_minibatch(
     kl_reference_client: tinker.SamplingClient | None,
     kl_penalty_coef: float,
     kl_discount_factor: float,
+    advantage_name: str = "grpo",
 ) -> tuple[list[tinker.Datum], dict[str, Any]]:
     """Convert trajectory groups into training data with computed advantages.
 
@@ -1309,6 +1338,8 @@ async def prepare_minibatch(
             to 0 to disable.
         kl_discount_factor (float): Position-based discount factor for KL
             penalty terms.
+        advantage_name (str): Name of the registered advantage estimator.
+            Defaults to ``"grpo"``.
 
     Returns:
         tuple[list[tinker.Datum], dict[str, Any]]: A list of training datums
@@ -1326,7 +1357,7 @@ async def prepare_minibatch(
 
     # Assemble training data
     async with trace.scope_span("assemble_training_data"):
-        advantages_P = compute_advantages(trajectory_groups_P)
+        advantages_P = compute_advantages(trajectory_groups_P, advantage_name=advantage_name)
         data_D, _metadata_D = assemble_training_data(trajectory_groups_P, advantages_P)
 
     # Incorporate KL penalty if configured
@@ -1454,6 +1485,7 @@ async def do_train_step_streaming_and_get_sampling_client(
     groups_per_minibatch = groups_per_substep // config.stream_minibatch_config.num_minibatches
 
     trace.update_scope_context({"step": i_batch})
+    effective_loss_fn, effective_loss_fn_config = resolve_loss_fn(config)
 
     metrics = {}
 
@@ -1497,6 +1529,7 @@ async def do_train_step_streaming_and_get_sampling_client(
                 kl_reference_client,
                 kl_penalty_coef=config.kl_penalty_coef,
                 kl_discount_factor=config.kl_discount_factor,
+                advantage_name=config.advantage_name,
             )
             metrics.update(prepare_minibatch_metrics)
 
@@ -1507,8 +1540,8 @@ async def do_train_step_streaming_and_get_sampling_client(
                 forward_backward_futures.append(
                     await training_client.forward_backward_async(
                         [_remove_mask(d) for d in data_D],
-                        loss_fn=config.loss_fn,
-                        loss_fn_config=config.loss_fn_config,
+                        loss_fn=effective_loss_fn,
+                        loss_fn_config=effective_loss_fn_config,
                     )
                 )
             all_data_D.extend(data_D)
@@ -1596,6 +1629,7 @@ async def do_train_step_and_get_sampling_client(
         minibatch preparation, training, and checkpointing.
     """
     trace.update_scope_context({"step": i_batch})
+    effective_loss_fn, effective_loss_fn_config = resolve_loss_fn(config)
 
     metrics = {}
     data_D, prepare_minibatch_metrics = await prepare_minibatch(
@@ -1605,6 +1639,7 @@ async def do_train_step_and_get_sampling_client(
         kl_reference_client,
         kl_penalty_coef=config.kl_penalty_coef,
         kl_discount_factor=config.kl_discount_factor,
+        advantage_name=config.advantage_name,
     )
     metrics.update(prepare_minibatch_metrics)
 
@@ -1613,8 +1648,8 @@ async def do_train_step_and_get_sampling_client(
         training_client=training_client,
         learning_rate=config.learning_rate,
         num_substeps=config.num_substeps,
-        loss_fn=config.loss_fn,
-        loss_fn_config=config.loss_fn_config,
+        loss_fn=effective_loss_fn,
+        loss_fn_config=effective_loss_fn_config,
         metrics=metrics,
     )
 

@@ -6,6 +6,7 @@ and assembling training batches.
 """
 
 import logging
+from typing import Any
 
 import tinker
 import torch
@@ -15,31 +16,42 @@ from tinker_cookbook.rl.types import Trajectory, TrajectoryGroup
 from tinker_cookbook.supervised.common import (
     create_rightshifted_model_input_and_leftshifted_targets,
 )
+from tinker_cookbook.utils import trace
 from tinker_cookbook.utils.misc_utils import all_same, safezip
 
 logger = logging.getLogger(__name__)
 
 
-def compute_advantages(trajectory_groups_P: list[TrajectoryGroup]) -> list[torch.Tensor]:
-    """Compute advantages for each trajectory, centered within groups.
+def compute_advantages(
+    trajectory_groups_P: list[TrajectoryGroup],
+    advantage_name: str = "grpo",
+    **kwargs: Any,
+) -> list[torch.Tensor]:
+    """Compute advantages for each trajectory using a registered estimator.
+
+    Looks up the advantage estimator by ``advantage_name`` in the
+    :data:`~tinker_cookbook.rl.algorithm_registry.advantage_registry` and
+    delegates to it.  The default ``"grpo"`` estimator centers rewards
+    within each group, matching the original hard-coded behavior.
 
     Args:
         trajectory_groups_P (list[TrajectoryGroup]): Groups of trajectories,
             where each group's rewards are centered independently.
+        advantage_name (str): Name of the registered advantage estimator.
+            Defaults to ``"grpo"``.
+        **kwargs: Extra keyword arguments forwarded to the estimator.
 
     Returns:
         list[torch.Tensor]: Per-group advantage tensors of shape ``(G,)``,
             where ``G`` is the number of trajectories in each group.
+
+    Raises:
+        KeyError: If ``advantage_name`` is not registered.
     """
-    advantages_P: list[torch.Tensor] = []
+    from tinker_cookbook.rl.algorithm_registry import get_advantage_fn
 
-    for traj_group in trajectory_groups_P:
-        rewards_G = torch.tensor(traj_group.get_total_rewards())
-        # Center advantages within the group
-        advantages_G = rewards_G - rewards_G.mean()
-        advantages_P.append(advantages_G)
-
-    return advantages_P
+    advantage_fn = get_advantage_fn(advantage_name)
+    return advantage_fn(trajectory_groups_P, **kwargs)
 
 
 FlatObElem = int | tinker.ModelInputChunk
