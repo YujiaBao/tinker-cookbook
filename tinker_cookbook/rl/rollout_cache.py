@@ -183,6 +183,13 @@ class RolloutCache:
         self._entries: list[CachedRolloutEntry] = []
         self._stats: CacheStats = CacheStats()
 
+    def reset_step_stats(self) -> None:
+        """Reset per-step counters at the beginning of each training iteration.
+
+        Call this at the start of each batch to get clean per-step metrics.
+        """
+        self._stats.step = StepStats()
+
     def cache_partial(
         self,
         env_group_builder: EnvGroupBuilder,
@@ -199,6 +206,7 @@ class RolloutCache:
             reason: Why this group is being cached.
             current_step: The current training iteration index.
         """
+        t0 = time.monotonic()
         entry = CachedRolloutEntry(
             env_group_builder=env_group_builder,
             partial_trajectories=partial_trajectories,
@@ -208,10 +216,12 @@ class RolloutCache:
         self._entries.append(entry)
         self._stats.items_cached += 1
         self._stats.current_size = len(self._entries)
+        self._stats.step.cached_this_step += 1
         reason_key = reason.value
         self._stats.cache_hits_by_reason[reason_key] = (
             self._stats.cache_hits_by_reason.get(reason_key, 0) + 1
         )
+        self._stats.step.cache_operation_time += time.monotonic() - t0
         logger.debug(
             "Cached rollout group: reason=%s, step=%d, partial_trajectories=%d",
             reason.value,
@@ -238,6 +248,7 @@ class RolloutCache:
         Returns:
             List of resumable cache entries, removed from the cache.
         """
+        t0 = time.monotonic()
         resumable: list[CachedRolloutEntry] = []
         remaining: list[CachedRolloutEntry] = []
         for entry in self._entries:
@@ -250,6 +261,18 @@ class RolloutCache:
         self._entries = remaining
         self._stats.items_resumed += len(resumable)
         self._stats.current_size = len(self._entries)
+        # Per-step tracking
+        self._stats.step.hits += len(resumable)
+        # Estimate compute saved: count action tokens from partial trajectories
+        # that represent generation work already done. The builder reuse also
+        # saves re-selecting the problem and re-encoding the prompt.
+        for entry in resumable:
+            for traj in entry.partial_trajectories:
+                for transition in traj.transitions:
+                    self._stats.step.compute_saved_estimate += len(
+                        transition.ac.tokens
+                    )
+        self._stats.step.cache_operation_time += time.monotonic() - t0
         if resumable:
             logger.info(
                 "Returning %d resumable rollout groups (step=%d, max_age=%d)",
@@ -258,6 +281,17 @@ class RolloutCache:
                 max_age_steps,
             )
         return resumable
+
+    def record_misses(self, count: int) -> None:
+        """Record cache misses for groups that were freshly generated.
+
+        Called by the training loop to record how many groups in the batch
+        were *not* served from cache (i.e., new groups from the dataset).
+
+        Args:
+            count: Number of groups that were not from the cache.
+        """
+        self._stats.step.misses += count
 
     def clear_expired(
         self,
@@ -274,6 +308,7 @@ class RolloutCache:
         Returns:
             Number of entries evicted.
         """
+        t0 = time.monotonic()
         before = len(self._entries)
         self._entries = [
             e for e in self._entries
@@ -282,6 +317,8 @@ class RolloutCache:
         evicted = before - len(self._entries)
         self._stats.items_expired += evicted
         self._stats.current_size = len(self._entries)
+        self._stats.step.evicted += evicted
+        self._stats.step.cache_operation_time += time.monotonic() - t0
         if evicted > 0:
             logger.debug(
                 "Evicted %d expired rollout cache entries (step=%d, max_age=%d)",
@@ -295,7 +332,8 @@ class RolloutCache:
         """Return a snapshot of cumulative cache statistics.
 
         Returns:
-            A :class:`CacheStats` with current counters.
+            A :class:`CacheStats` with current counters including per-step
+            :class:`StepStats`.
         """
         # Return a copy so callers cannot mutate internal state
         return CacheStats(
@@ -304,6 +342,14 @@ class RolloutCache:
             items_expired=self._stats.items_expired,
             current_size=self._stats.current_size,
             cache_hits_by_reason=dict(self._stats.cache_hits_by_reason),
+            step=StepStats(
+                hits=self._stats.step.hits,
+                misses=self._stats.step.misses,
+                evicted=self._stats.step.evicted,
+                cached_this_step=self._stats.step.cached_this_step,
+                compute_saved_estimate=self._stats.step.compute_saved_estimate,
+                cache_operation_time=self._stats.step.cache_operation_time,
+            ),
         )
 
     def __len__(self) -> int:

@@ -45,7 +45,7 @@ from tinker_cookbook.rl.rollout_logging import (
     rollout_summaries_jsonl_path,
     write_rollout_summaries_jsonl_from_groups,
 )
-from tinker_cookbook.rl.rollout_cache import RolloutCache
+from tinker_cookbook.rl.rollout_cache import CachedRolloutEntry, RolloutCache
 from tinker_cookbook.rl.rollout_strategy import (
     RolloutStrategy,
     rollout_strategy_from_config,
@@ -193,6 +193,40 @@ def _get_logtree_scope(
     finally:
         if logtree_trace is not None:
             logtree.write_trace_json(logtree_trace, logtree_json_path)
+
+
+def _log_rollout_cache_to_logtree(
+    cache: RolloutCache,
+    resumable: list[CachedRolloutEntry],
+) -> None:
+    """Log rollout cache statistics to the active logtree trace.
+
+    Safe to call when logtree logging is disabled -- all logtree calls
+    degrade gracefully to no-ops.
+    """
+    stats = cache.stats()
+    with logtree.scope_header("Rollout Cache"):
+        logtree.table_from_dict(
+            {
+                "cache_size": stats.current_size,
+                "hits": stats.step.hits,
+                "misses": stats.step.misses,
+                "hit_rate": f"{stats.step.hit_rate:.2%}",
+                "evicted": stats.step.evicted,
+                "cached_this_step": stats.step.cached_this_step,
+                "compute_saved_estimate": stats.step.compute_saved_estimate,
+            },
+            caption="Cache Statistics",
+        )
+        if resumable:
+            with logtree.scope_details("Cached Entries"):
+                for entry in resumable:
+                    logtree.log_text(
+                        f"Steps: {entry.cached_at_step}, "
+                        f"Reason: {entry.reason.value}, "
+                        f"Attempt: {entry.attempt_count}, "
+                        f"Partial trajectories: {len(entry.partial_trajectories)}"
+                    )
 
 
 def _select_representative_inds(scores: list[float], num_inds: int) -> list[int]:
@@ -725,10 +759,13 @@ async def do_sync_training_with_stream_minibatch(
 
                 # Retrieve resumable entries from cache and add to current batch
                 if rollout_cache is not None:
-                    resumable = rollout_cache.get_resumable(
-                        current_step=i_batch,
-                        max_age_steps=config.rollout_cache_max_age_steps,
-                    )
+                    rollout_cache.reset_step_stats()
+                    n_fresh = len(env_group_builders_P)
+                    async with trace.scope_span("rollout_cache_retrieve"):
+                        resumable = rollout_cache.get_resumable(
+                            current_step=i_batch,
+                            max_age_steps=config.rollout_cache_max_age_steps,
+                        )
                     if resumable:
                         logger.info(
                             "Resuming %d cached rollout groups in batch %d",
@@ -738,10 +775,13 @@ async def do_sync_training_with_stream_minibatch(
                         env_group_builders_P.extend(
                             entry.env_group_builder for entry in resumable
                         )
-                    rollout_cache.clear_expired(
-                        current_step=i_batch,
-                        max_age_steps=config.rollout_cache_max_age_steps,
-                    )
+                    rollout_cache.record_misses(n_fresh)
+                    async with trace.scope_span("rollout_cache_evict"):
+                        rollout_cache.clear_expired(
+                            current_step=i_batch,
+                            max_age_steps=config.rollout_cache_max_age_steps,
+                        )
+                    _log_rollout_cache_to_logtree(rollout_cache, resumable)
 
                 @trace.scope
                 async def trajectory_group_worker_task(
@@ -1101,6 +1141,9 @@ async def do_async_training(
                         )
                     return False
                 return True
+
+            if rollout_cache is not None:
+                rollout_cache.reset_step_stats()
 
             metrics: dict[str, Any] = {
                 "training_client/step": i_batch,
@@ -1757,11 +1800,15 @@ async def do_sync_training(
             env_group_builders_P: list[EnvGroupBuilder] = list(dataset.get_batch(i_batch))
 
             # Retrieve resumable entries from cache and add to current batch
+            resumable: list[CachedRolloutEntry] = []
             if rollout_cache is not None:
-                resumable = rollout_cache.get_resumable(
-                    current_step=i_batch,
-                    max_age_steps=config.rollout_cache_max_age_steps,
-                )
+                rollout_cache.reset_step_stats()
+                n_fresh = len(env_group_builders_P)
+                async with trace.scope_span("rollout_cache_retrieve"):
+                    resumable = rollout_cache.get_resumable(
+                        current_step=i_batch,
+                        max_age_steps=config.rollout_cache_max_age_steps,
+                    )
                 if resumable:
                     logger.info(
                         "Resuming %d cached rollout groups in batch %d",
@@ -1771,11 +1818,13 @@ async def do_sync_training(
                     env_group_builders_P.extend(
                         entry.env_group_builder for entry in resumable
                     )
+                rollout_cache.record_misses(n_fresh)
                 # Evict stale entries
-                rollout_cache.clear_expired(
-                    current_step=i_batch,
-                    max_age_steps=config.rollout_cache_max_age_steps,
-                )
+                async with trace.scope_span("rollout_cache_evict"):
+                    rollout_cache.clear_expired(
+                        current_step=i_batch,
+                        max_age_steps=config.rollout_cache_max_age_steps,
+                    )
 
             # Initialize logtree trace for this iteration if logging is enabled
             iter_dir = iteration_dir(config.log_path, i_batch)
@@ -1786,6 +1835,8 @@ async def do_sync_training(
                     f_name="train",
                     scope_name=f"RL Iteration {i_batch}",
                 ):
+                    if rollout_cache is not None:
+                        _log_rollout_cache_to_logtree(rollout_cache, resumable)
                     # Note: do_remove_constant_reward_groups=False here because we remove
                     # constant reward groups after all rollouts are collected (below)
                     results_P = await gather_with_progress(

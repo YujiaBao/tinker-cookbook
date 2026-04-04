@@ -14,6 +14,7 @@ from tinker_cookbook.rl.rollout_cache import (
     CacheReason,
     CacheStats,
     RolloutCache,
+    StepStats,
 )
 from tinker_cookbook.rl.rollouts import _do_group_rollout_and_filter_constant_reward_impl
 from tinker_cookbook.rl.types import (
@@ -189,9 +190,17 @@ class TestRolloutCache:
         )
         metrics = cache.stats().as_metrics()
         assert "rollout_cache/items_cached" in metrics
-        assert "rollout_cache/current_size" in metrics
+        assert "rollout_cache/size" in metrics
+        assert "rollout_cache/hits" in metrics
+        assert "rollout_cache/misses" in metrics
+        assert "rollout_cache/hit_rate" in metrics
+        assert "rollout_cache/evicted" in metrics
+        assert "rollout_cache/cached_this_step" in metrics
+        assert "rollout_cache/compute_saved_estimate" in metrics
+        assert "time/rollout_cache_operations" in metrics
         assert "rollout_cache/cached_reason/constant_reward" in metrics
         assert metrics["rollout_cache/items_cached"] == 1.0
+        assert metrics["rollout_cache/cached_this_step"] == 1.0
 
     def test_bool_and_len(self):
         cache = RolloutCache()
@@ -347,7 +356,14 @@ class TestCacheStats:
         stats = CacheStats()
         metrics = stats.as_metrics()
         assert metrics["rollout_cache/items_cached"] == 0.0
-        assert metrics["rollout_cache/current_size"] == 0.0
+        assert metrics["rollout_cache/size"] == 0.0
+        assert metrics["rollout_cache/hits"] == 0.0
+        assert metrics["rollout_cache/misses"] == 0.0
+        assert metrics["rollout_cache/hit_rate"] == 0.0
+        assert metrics["rollout_cache/evicted"] == 0.0
+        assert metrics["rollout_cache/cached_this_step"] == 0.0
+        assert metrics["rollout_cache/compute_saved_estimate"] == 0.0
+        assert metrics["time/rollout_cache_operations"] == 0.0
 
     def test_as_metrics_custom_prefix(self):
         stats = CacheStats(items_cached=5)
@@ -365,3 +381,73 @@ class TestCachedRolloutEntry:
             cached_at_step=0,
         )
         assert entry.attempt_count == 0
+
+
+class TestStepStats:
+    def test_hit_rate_empty(self):
+        s = StepStats()
+        assert s.hit_rate == 0.0
+
+    def test_hit_rate_computed(self):
+        s = StepStats(hits=3, misses=7)
+        assert abs(s.hit_rate - 0.3) < 1e-9
+
+    def test_reset_step_stats(self):
+        cache = RolloutCache()
+        cache.cache_partial(
+            env_group_builder=_FakeEnvGroupBuilder(),
+            partial_trajectories=[_make_trajectory()],
+            reason=CacheReason.CONSTANT_REWARD,
+            current_step=1,
+        )
+        assert cache.stats().step.cached_this_step == 1
+        cache.reset_step_stats()
+        assert cache.stats().step.cached_this_step == 0
+        # Cumulative stats should be preserved
+        assert cache.stats().items_cached == 1
+
+    def test_record_misses(self):
+        cache = RolloutCache()
+        cache.record_misses(5)
+        assert cache.stats().step.misses == 5
+        cache.record_misses(3)
+        assert cache.stats().step.misses == 8
+
+    def test_compute_saved_estimate(self):
+        cache = RolloutCache()
+        traj = _make_trajectory(reward=1.0)
+        # The trajectory has 1 transition with 2 action tokens [4, 5]
+        cache.cache_partial(
+            env_group_builder=_FakeEnvGroupBuilder(),
+            partial_trajectories=[traj],
+            reason=CacheReason.CONSTANT_REWARD,
+            current_step=1,
+        )
+        resumable = cache.get_resumable(current_step=2, max_age_steps=3)
+        assert len(resumable) == 1
+        assert cache.stats().step.compute_saved_estimate == 2  # 2 tokens from [4, 5]
+
+    def test_eviction_tracked_in_step_stats(self):
+        cache = RolloutCache()
+        cache.cache_partial(
+            env_group_builder=_FakeEnvGroupBuilder(),
+            partial_trajectories=[],
+            reason=CacheReason.ALL_FAILED,
+            current_step=1,
+        )
+        evicted = cache.clear_expired(current_step=10, max_age_steps=1)
+        assert evicted == 1
+        assert cache.stats().step.evicted == 1
+
+    def test_cache_operation_time_tracked(self):
+        cache = RolloutCache()
+        cache.cache_partial(
+            env_group_builder=_FakeEnvGroupBuilder(),
+            partial_trajectories=[],
+            reason=CacheReason.CONSTANT_REWARD,
+            current_step=1,
+        )
+        cache.get_resumable(current_step=2, max_age_steps=3)
+        cache.clear_expired(current_step=2, max_age_steps=3)
+        # Time should be positive (all three operations contribute)
+        assert cache.stats().step.cache_operation_time >= 0.0

@@ -12,6 +12,7 @@ import tinker
 from tinker_cookbook.completers import TinkerTokenCompleter, TokenCompleter
 from tinker_cookbook.exceptions import AllTrajectoriesFailedError
 from tinker_cookbook.rl.rollout_cache import CacheReason, RolloutCache
+from tinker_cookbook.utils import trace
 from tinker_cookbook.rl.rollout_strategy import FailFast, RolloutStrategy
 from tinker_cookbook.rl.types import (
     ActionExtra,
@@ -465,34 +466,37 @@ async def _do_group_rollout_and_filter_constant_reward_impl(
         # All retries exhausted — already logged per-trajectory inside the strategy
         logger.warning(str(e))
         if rollout_cache is not None:
-            rollout_cache.cache_partial(
-                env_group_builder=env_group_builder,
-                partial_trajectories=[],
-                reason=CacheReason.ALL_FAILED,
-                current_step=current_step,
-            )
+            with trace.scope_span_sync("rollout_cache_store"):
+                rollout_cache.cache_partial(
+                    env_group_builder=env_group_builder,
+                    partial_trajectories=[],
+                    reason=CacheReason.ALL_FAILED,
+                    current_step=current_step,
+                )
         return None
     except Exception as e:
         if not strategy.catches_group_errors:
             raise
         logger.warning(f"Rollout error ({type(e).__name__}), skipping group: {e}")
         if rollout_cache is not None:
-            rollout_cache.cache_partial(
-                env_group_builder=env_group_builder,
-                partial_trajectories=[],
-                reason=CacheReason.ROLLOUT_ERROR,
-                current_step=current_step,
-            )
+            with trace.scope_span_sync("rollout_cache_store"):
+                rollout_cache.cache_partial(
+                    env_group_builder=env_group_builder,
+                    partial_trajectories=[],
+                    reason=CacheReason.ROLLOUT_ERROR,
+                    current_step=current_step,
+                )
         return None
 
     # Remove if all trajectories have the same reward
     if do_remove_constant_reward_groups and all_same(trajectory_group.get_total_rewards()):
         if rollout_cache is not None:
-            rollout_cache.cache_partial(
-                env_group_builder=env_group_builder,
-                partial_trajectories=list(trajectory_group.trajectories_G),
-                reason=CacheReason.CONSTANT_REWARD,
-                current_step=current_step,
-            )
+            with trace.scope_span_sync("rollout_cache_store"):
+                rollout_cache.cache_partial(
+                    env_group_builder=env_group_builder,
+                    partial_trajectories=list(trajectory_group.trajectories_G),
+                    reason=CacheReason.CONSTANT_REWARD,
+                    current_step=current_step,
+                )
         return None
     return trajectory_group
