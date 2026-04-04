@@ -45,6 +45,7 @@ from tinker_cookbook.rl.rollout_logging import (
     rollout_summaries_jsonl_path,
     write_rollout_summaries_jsonl_from_groups,
 )
+from tinker_cookbook.rl.rollout_cache import RolloutCache
 from tinker_cookbook.rl.rollout_strategy import (
     RolloutStrategy,
     rollout_strategy_from_config,
@@ -521,6 +522,16 @@ class Config:
     # Maximum number of training iterations. If None, train on the full dataset.
     max_steps: int | None = None
 
+    # -------------------------------------------------------------------------
+    # Partial rollout caching (advanced)
+    # -------------------------------------------------------------------------
+    # When enabled, rollout groups that are filtered (constant reward) or
+    # errored are cached so their EnvGroupBuilder can be retried in later
+    # iterations.
+    rollout_cache_enabled: bool = False
+    # Maximum age (in training steps) for a cached entry to be retried.
+    rollout_cache_max_age_steps: int = 3
+
 
 @trace.scope
 async def run_single_evaluation(
@@ -675,6 +686,9 @@ async def do_sync_training_with_stream_minibatch(
         config.ttl_seconds,
     )
 
+    # Create rollout cache if enabled
+    rollout_cache: RolloutCache | None = RolloutCache() if config.rollout_cache_enabled else None
+
     for i_batch in range(start_batch, end_batch):
         metrics: dict[str, Any] = {
             "progress/batch": i_batch,
@@ -705,7 +719,29 @@ async def do_sync_training_with_stream_minibatch(
                 trajectory_groups_queue: asyncio.Queue[
                     WrappedTrajectoryGroup | _Shutdown | None
                 ] = asyncio.Queue()
-                env_group_builders_P = dataset.get_batch(i_batch)
+                env_group_builders_P: list[EnvGroupBuilder] = list(
+                    dataset.get_batch(i_batch)
+                )
+
+                # Retrieve resumable entries from cache and add to current batch
+                if rollout_cache is not None:
+                    resumable = rollout_cache.get_resumable(
+                        current_step=i_batch,
+                        max_age_steps=config.rollout_cache_max_age_steps,
+                    )
+                    if resumable:
+                        logger.info(
+                            "Resuming %d cached rollout groups in batch %d",
+                            len(resumable),
+                            i_batch,
+                        )
+                        env_group_builders_P.extend(
+                            entry.env_group_builder for entry in resumable
+                        )
+                    rollout_cache.clear_expired(
+                        current_step=i_batch,
+                        max_age_steps=config.rollout_cache_max_age_steps,
+                    )
 
                 @trace.scope
                 async def trajectory_group_worker_task(
@@ -722,6 +758,8 @@ async def do_sync_training_with_stream_minibatch(
                             do_remove_constant_reward_groups=config.remove_constant_reward_groups,
                             enable_logging=enable_logging,
                             strategy=strategy,
+                            rollout_cache=rollout_cache,
+                            current_step=i_batch,
                         )
                     worker_metrics["time/trajectory_group_worker_loop/total"] = (
                         time.time() - t_start
@@ -792,6 +830,8 @@ async def do_sync_training_with_stream_minibatch(
         metrics.update(full_batch_metrics)
         if error_counter is not None:
             metrics.update(error_counter.get_metrics())
+        if rollout_cache is not None:
+            metrics.update(rollout_cache.stats().as_metrics())
         metrics.update(window.get_timing_metrics())
         window.write_spans_jsonl(Path(config.log_path) / "timing_spans.jsonl", step=i_batch)
         if (
@@ -911,6 +951,9 @@ async def do_async_training(
     """
     assert config.async_config is not None
 
+    # Create rollout cache if enabled
+    rollout_cache: RolloutCache | None = RolloutCache() if config.rollout_cache_enabled else None
+
     # We will have groups_per_batch workers generating rollouts, so cap the
     # queue size to be groups_per_batch.
     env_group_builders_queue = asyncio.Queue[EnvGroupBuilder | _Shutdown](
@@ -987,6 +1030,8 @@ async def do_async_training(
                     temperature=config.temperature,
                     do_remove_constant_reward_groups=config.remove_constant_reward_groups,
                     strategy=strategy,
+                    rollout_cache=rollout_cache,
+                    current_step=sampling_client_step_copy,
                 )
             worker_metrics["time/trajectory_group_worker_loop/total"] = time.time() - t_start
             # Ingest error info (safe: same event loop thread)
@@ -1180,6 +1225,8 @@ async def do_async_training(
             metrics.update(train_step_metrics)
             if error_counter is not None:
                 metrics.update(error_counter.get_metrics())
+            if rollout_cache is not None:
+                metrics.update(rollout_cache.stats().as_metrics())
             metrics.update(window.get_timing_metrics())
             window.write_spans_jsonl(Path(config.log_path) / "timing_spans.jsonl", step=i_batch)
             if config.span_chart_every > 0 and i_batch % config.span_chart_every == 0:
@@ -1688,6 +1735,9 @@ async def do_sync_training(
         config.ttl_seconds,
     )
 
+    # Create rollout cache if enabled
+    rollout_cache: RolloutCache | None = RolloutCache() if config.rollout_cache_enabled else None
+
     for i_batch in range(start_batch, end_batch):
         metrics: dict[str, Any] = {
             "progress/batch": i_batch,
@@ -1704,7 +1754,28 @@ async def do_sync_training(
                 metrics.update(eval_metrics)
 
             # Get batch and sample trajectories
-            env_group_builders_P = dataset.get_batch(i_batch)
+            env_group_builders_P: list[EnvGroupBuilder] = list(dataset.get_batch(i_batch))
+
+            # Retrieve resumable entries from cache and add to current batch
+            if rollout_cache is not None:
+                resumable = rollout_cache.get_resumable(
+                    current_step=i_batch,
+                    max_age_steps=config.rollout_cache_max_age_steps,
+                )
+                if resumable:
+                    logger.info(
+                        "Resuming %d cached rollout groups in batch %d",
+                        len(resumable),
+                        i_batch,
+                    )
+                    env_group_builders_P.extend(
+                        entry.env_group_builder for entry in resumable
+                    )
+                # Evict stale entries
+                rollout_cache.clear_expired(
+                    current_step=i_batch,
+                    max_age_steps=config.rollout_cache_max_age_steps,
+                )
 
             # Initialize logtree trace for this iteration if logging is enabled
             iter_dir = iteration_dir(config.log_path, i_batch)
@@ -1727,6 +1798,8 @@ async def do_sync_training(
                                 do_remove_constant_reward_groups=False,
                                 enable_logging=i < config.num_groups_to_log,
                                 strategy=strategy,
+                                rollout_cache=rollout_cache,
+                                current_step=i_batch,
                             )
                             for i, builder in enumerate(env_group_builders_P)
                         ),
@@ -1794,6 +1867,8 @@ async def do_sync_training(
         metrics.update(window.get_timing_metrics())
         if error_counter is not None:
             metrics.update(error_counter.get_metrics())
+        if rollout_cache is not None:
+            metrics.update(rollout_cache.stats().as_metrics())
         window.write_spans_jsonl(Path(config.log_path) / "timing_spans.jsonl", step=i_batch)
         if (
             config.span_chart_every > 0

@@ -1,6 +1,7 @@
 """Reinforcement learning: environment protocol, types, and training loops."""
 
 from tinker_cookbook.rl.interleaved import InterleavedRLDatasetBuilder
+from tinker_cookbook.rl.rollout_cache import CacheReason, RolloutCache
 from tinker_cookbook.rl.rollout_strategy import FailFast, RetryOnFailure, RolloutStrategy
 from tinker_cookbook.rl.types import (
     Action,
@@ -41,4 +42,7 @@ __all__ = [
     "FailFast",
     "RetryOnFailure",
     "RolloutStrategy",
+    # Rollout cache (rollout_cache.py)
+    "CacheReason",
+    "RolloutCache",
 ]
