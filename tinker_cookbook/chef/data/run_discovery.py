@@ -31,6 +31,7 @@ class RunInfo:
     status: Status
     last_updated: float | None
     training_type: TrainingType | None
+    source: str = ""  # label identifying which storage source this came from
 
 
 @dataclass

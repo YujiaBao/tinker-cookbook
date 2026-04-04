@@ -1,7 +1,7 @@
 """FastAPI application factory for Tinker Chef."""
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,25 +20,43 @@ logger = logging.getLogger(__name__)
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
-def create_app(root: str | Path, storage: Storage | None = None) -> FastAPI:
+def create_app(
+    root: str | Path | Sequence[str | Path],
+    storage: Storage | None = None,
+) -> FastAPI:
     """Create and configure the Tinker Chef FastAPI application.
 
     Args:
-        root: Root directory to scan for training runs.
-        storage: Storage backend. If None, creates LocalStorage(root).
+        root: One or more directories to scan for training runs.
+            Can be a single path or a list of paths.
+        storage: Storage backend (for single-root only). If None,
+            creates LocalStorage for each root.
     """
-    root_path = Path(root).resolve()
-    if storage is None:
-        if not root_path.is_dir():
-            raise FileNotFoundError(f"Root directory does not exist: {root_path}")
-        storage = LocalStorage(root_path)
+    # Normalize to list of paths
+    if isinstance(root, (str, Path)):
+        roots = [Path(root).resolve()]
+    else:
+        roots = [Path(r).resolve() for r in root]
 
-    store = RunStore(storage)
+    # Create storages
+    if storage is not None:
+        storages = [storage]
+    else:
+        storages = []
+        for r in roots:
+            if not r.is_dir():
+                raise FileNotFoundError(f"Directory does not exist: {r}")
+            storages.append(LocalStorage(r))
+
+    store = RunStore(storages)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_list = store.refresh_runs()
-        logger.info("Tinker Chef started — discovered %d run(s) in %s", len(run_list), root_path)
+        logger.info(
+            "Tinker Chef started — %d run(s) from %d source(s)",
+            len(run_list), len(storages),
+        )
         for run in run_list:
             logger.info("  Run '%s': %d iterations", run.run_id, run.iteration_count)
         yield
@@ -78,9 +96,6 @@ def create_app(root: str | Path, storage: Storage | None = None) -> FastAPI:
     else:
         @app.get("/")
         async def no_frontend() -> dict[str, str]:
-            return {
-                "message": "Tinker Chef API is running. Frontend not built yet.",
-                "api_docs": "/docs",
-            }
+            return {"message": "Tinker Chef API is running.", "api_docs": "/docs"}
 
     return app

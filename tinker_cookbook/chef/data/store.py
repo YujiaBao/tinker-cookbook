@@ -28,28 +28,46 @@ logger = logging.getLogger(__name__)
 class RunStore:
     """Manages data access for all discovered training runs.
 
-    All file I/O is delegated to the ``storage`` instance, making
-    the dashboard backend-agnostic (local disk, S3, etc.).
+    Supports multiple storage backends (e.g., multiple local directories).
+    Each run is tracked with its source storage so readers access the right one.
     """
 
-    def __init__(self, storage: Storage) -> None:
-        self._storage = storage
+    def __init__(self, storages: Storage | list[Storage]) -> None:
+        if isinstance(storages, list):
+            self._storages = storages
+        else:
+            self._storages = [storages]
         self._runs: dict[str, RunInfo] | None = None
+        self._run_storage: dict[str, Storage] = {}  # run_id -> its storage
         self._metrics_readers: dict[str, MetricsReader] = {}
         self._config_readers: dict[str, ConfigReader] = {}
         self._rollout_readers: dict[str, RolloutReader] = {}
         self._logtree_readers: dict[str, LogtreeReader] = {}
         self._timing_readers: dict[str, TimingReader] = {}
-        self._eval_readers: dict[str, EvalReader | object] = {}  # object = miss sentinel
+        self._eval_readers: dict[str, EvalReader | object] = {}
 
     @property
     def storage(self) -> Storage:
-        return self._storage
+        """Primary storage (first in list). Used for global operations."""
+        return self._storages[0]
+
+    def _storage_for(self, run_id: str) -> Storage | None:
+        return self._run_storage.get(run_id)
 
     def refresh_runs(self) -> list[RunInfo]:
-        runs = discover_runs(self._storage)
-        self._runs = {r.run_id: r for r in runs}
-        return runs
+        all_runs: dict[str, RunInfo] = {}
+        self._run_storage.clear()
+        for storage in self._storages:
+            source = ""
+            if hasattr(storage, "root"):
+                source = getattr(storage, "root").name
+            for run in discover_runs(storage):
+                # Deduplicate by run_id; first storage wins
+                uid = f"{source}/{run.run_id}" if run.run_id in all_runs else run.run_id
+                all_runs[uid] = run
+                self._run_storage[uid] = storage
+        self._runs = all_runs
+        return list(all_runs.values())
 
     def get_runs(self) -> list[RunInfo]:
         if self._runs is None:
@@ -75,7 +93,8 @@ class RunStore:
             if prefix is None:
                 return None
             path = storage_join(prefix, "metrics.jsonl")
-            self._metrics_readers[run_id] = MetricsReader(self._storage, path)
+            storage = self._storage_for(run_id) or self.storage
+            self._metrics_readers[run_id] = MetricsReader(storage, path)
         return self._metrics_readers[run_id]
 
     def get_metrics(self, run_id: str) -> list[dict[str, Any]]:
@@ -99,7 +118,8 @@ class RunStore:
             if prefix is None:
                 return None
             path = storage_join(prefix, "config.json")
-            self._config_readers[run_id] = ConfigReader(self._storage, path)
+            storage = self._storage_for(run_id) or self.storage
+            self._config_readers[run_id] = ConfigReader(storage, path)
         return self._config_readers[run_id].read()
 
     # --- Iterations ---
@@ -108,7 +128,8 @@ class RunStore:
         prefix = self._run_prefix(run_id)
         if prefix is None:
             return []
-        return list_iterations(self._storage, prefix)
+        storage = self._storage_for(run_id) or self.storage
+        return list_iterations(storage, prefix)
 
     # --- Rollouts ---
 
@@ -117,7 +138,8 @@ class RunStore:
             prefix = self._run_prefix(run_id)
             if prefix is None:
                 return None
-            self._rollout_readers[run_id] = RolloutReader(self._storage, prefix)
+            storage = self._storage_for(run_id) or self.storage
+            self._rollout_readers[run_id] = RolloutReader(storage, prefix)
         return self._rollout_readers[run_id]
 
     def get_rollouts(self, run_id: str, iteration: int, split: str = "train",
@@ -138,7 +160,8 @@ class RunStore:
             prefix = self._run_prefix(run_id)
             if prefix is None:
                 return None
-            self._logtree_readers[run_id] = LogtreeReader(self._storage, prefix)
+            storage = self._storage_for(run_id) or self.storage
+            self._logtree_readers[run_id] = LogtreeReader(storage, prefix)
         return self._logtree_readers[run_id]
 
     def get_logtree(self, run_id: str, iteration: int, base_name: str = "train") -> dict[str, Any] | None:
@@ -153,7 +176,8 @@ class RunStore:
             if prefix is None:
                 return None
             path = storage_join(prefix, "timing_spans.jsonl")
-            self._timing_readers[run_id] = TimingReader(self._storage, path)
+            storage = self._storage_for(run_id) or self.storage
+            self._timing_readers[run_id] = TimingReader(storage, path)
         return self._timing_readers[run_id]
 
     def get_timing(self, run_id: str) -> list[dict[str, Any]]:
@@ -183,10 +207,11 @@ class RunStore:
             candidate = storage_join(prefix, suffix)
             runs_jsonl = storage_join(candidate, "runs.jsonl")
             runs_dir = storage_join(candidate, "runs")
-            if self._storage.exists(runs_jsonl) or (
-                self._storage.exists(runs_dir) and len(self._storage.list_dir(runs_dir)) > 0
+            storage = self._storage_for(run_id) or self.storage
+            if storage.exists(runs_jsonl) or (
+                storage.exists(runs_dir) and len(storage.list_dir(runs_dir)) > 0
             ):
-                reader = EvalReader(self._storage, candidate)
+                reader = EvalReader(storage, candidate)
                 self._eval_readers[run_id] = reader
                 return reader
 
@@ -200,12 +225,13 @@ class RunStore:
         if isinstance(cached, EvalReader):
             return cached
 
-        for prefix in ["eval", "eval_store", ""]:
-            runs_path = storage_join(prefix, "runs.jsonl")
-            if self._storage.exists(runs_path):
-                reader = EvalReader(self._storage, prefix)
-                self._eval_readers["__global__"] = reader
-                return reader
+        for storage in self._storages:
+            for prefix in ["eval", "eval_store", ""]:
+                runs_path = storage_join(prefix, "runs.jsonl")
+                if storage.exists(runs_path):
+                    reader = EvalReader(storage, prefix)
+                    self._eval_readers["__global__"] = reader
+                    return reader
 
         self._eval_readers["__global__"] = self._EVAL_MISS
         return None

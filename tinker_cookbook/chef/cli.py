@@ -55,8 +55,9 @@ def main(argv: list[str] | None = None) -> None:
     # serve command
     serve_parser = subparsers.add_parser("serve", help="Start the dashboard server")
     serve_parser.add_argument(
-        "log_dir",
-        help="Path to a training run directory or a parent directory containing multiple runs",
+        "log_dirs",
+        nargs="+",
+        help="One or more paths to training run directories or parent directories",
     )
     serve_parser.add_argument(
         "--host",
@@ -125,11 +126,13 @@ def _run_serve(args: argparse.Namespace) -> None:
 
     from tinker_cookbook.chef.app import create_app
 
-    app = create_app(args.log_dir)
+    log_dirs = args.log_dirs
+    app = create_app(log_dirs[0] if len(log_dirs) == 1 else log_dirs)
 
     _show_banner(args.no_banner)
 
-    print(f"  Serving runs from: {args.log_dir}")
+    for d in log_dirs:
+        print(f"  Serving: {d}")
     print(f"  Dashboard:  http://{args.host}:{args.port}")
     print(f"  API docs:   http://{args.host}:{args.port}/docs")
     print()
