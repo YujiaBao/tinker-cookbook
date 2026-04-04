@@ -11,7 +11,7 @@ from tinker_cookbook.recipes.math_rl import (
     arithmetic_env,
     math_env,
 )
-from tinker_cookbook.rl.train import AsyncConfig, Config, StreamMinibatchConfig, main
+from tinker_cookbook.rl.train import AsyncConfig, Config, DynamicSamplingConfig, StreamMinibatchConfig, main
 from tinker_cookbook.rl.types import RLDatasetBuilder
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,11 @@ class CLIConfig:
     loss_fn_config: dict[str, Any] | None = None
 
     max_steps: int | None = None
+
+    # Dynamic sampling (DAPO-style)
+    dynamic_sampling_oversample_ratio: float | None = None
+    dynamic_sampling_min_reward_std: float = 0.0
+    dynamic_sampling_max_filter_ratio: float = 0.5
 
 
 def get_dataset_builder(
@@ -167,6 +172,11 @@ async def cli_main(cli_config: CLIConfig):
         loss_fn=cli_config.loss_fn,
         loss_fn_config=cli_config.loss_fn_config,
         max_steps=cli_config.max_steps,
+        dynamic_sampling=DynamicSamplingConfig(
+            oversample_ratio=cli_config.dynamic_sampling_oversample_ratio,
+            min_reward_std=cli_config.dynamic_sampling_min_reward_std,
+            max_filter_ratio=cli_config.dynamic_sampling_max_filter_ratio,
+        ) if cli_config.dynamic_sampling_oversample_ratio is not None else None,
     )
 
     cli_utils.check_log_dir(log_path, behavior_if_exists=cli_config.behavior_if_log_dir_exists)

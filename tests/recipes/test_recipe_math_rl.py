@@ -59,8 +59,8 @@ def test_math_rl_dynamic_sampling():
             "groups_per_batch=8",
             "group_size=4",
             "max_tokens=5",
-            "dynamic_sampling.oversample_ratio=1.5",
-            "dynamic_sampling.max_filter_ratio=0.5",
+            "dynamic_sampling_oversample_ratio=1.5",
+            "dynamic_sampling_max_filter_ratio=0.5",
             "behavior_if_log_dir_exists=delete",
         ],
     )
