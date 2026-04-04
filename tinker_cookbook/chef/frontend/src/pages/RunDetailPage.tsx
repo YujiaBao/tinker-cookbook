@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { EvalSummaryPanel } from '../components/EvalSummaryPanel';
 import { MetricsPanel } from '../components/MetricsPanel';
 import { RolloutBrowser } from '../components/RolloutBrowser';
 import { TimingPanel } from '../components/TimingPanel';
 import type { IterationInfo, RunInfo } from '../api/types';
 
-type Tab = 'metrics' | 'rollouts' | 'timing' | 'config';
+type Tab = 'metrics' | 'rollouts' | 'timing' | 'evals' | 'config';
 
 export function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>();
@@ -15,7 +16,6 @@ export function RunDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>('metrics');
-  // Track which tabs have been visited for caching (render once, hide with CSS)
   const [visitedTabs, setVisitedTabs] = useState<Set<Tab>>(new Set(['metrics']));
 
   useEffect(() => {
@@ -43,6 +43,14 @@ export function RunDetailPage() {
 
   const hasIterations = iterations.some((it) => it.has_train_rollouts);
   const hasTiming = run.has_timing;
+
+  const tabs: { id: Tab; label: string; disabled?: boolean }[] = [
+    { id: 'metrics', label: 'Metrics' },
+    { id: 'rollouts', label: 'Rollouts', disabled: !hasIterations },
+    { id: 'timing', label: 'Timing', disabled: !hasTiming },
+    { id: 'evals', label: 'Evals' },
+    { id: 'config', label: 'Config' },
+  ];
 
   return (
     <div>
@@ -72,23 +80,19 @@ export function RunDetailPage() {
       </div>
 
       <div className="tabs">
-        {(['metrics', 'rollouts', 'timing', 'config'] as Tab[]).map((tab) => {
-          const disabled = (tab === 'rollouts' && !hasIterations) || (tab === 'timing' && !hasTiming);
-          return (
-            <button
-              key={tab}
-              className={`tab ${activeTab === tab ? 'active' : ''}`}
-              onClick={() => !disabled && switchTab(tab)}
-              style={disabled ? { opacity: 0.4, cursor: 'default' } : undefined}
-              title={disabled ? `No ${tab} data for this run` : undefined}
-            >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
-            </button>
-          );
-        })}
+        {tabs.map(({ id, label, disabled }) => (
+          <button
+            key={id}
+            className={`tab ${activeTab === id ? 'active' : ''}`}
+            onClick={() => !disabled && switchTab(id)}
+            style={disabled ? { opacity: 0.4, cursor: 'default' } : undefined}
+            title={disabled ? `No ${label.toLowerCase()} data` : undefined}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
-      {/* Cached tab rendering: mount once, hide with display:none */}
       <div style={{ display: activeTab === 'metrics' ? 'block' : 'none' }}>
         {visitedTabs.has('metrics') && <MetricsPanel runId={runId} />}
       </div>
@@ -97,6 +101,9 @@ export function RunDetailPage() {
       </div>
       <div style={{ display: activeTab === 'timing' ? 'block' : 'none' }}>
         {visitedTabs.has('timing') && <TimingPanel runId={runId} />}
+      </div>
+      <div style={{ display: activeTab === 'evals' ? 'block' : 'none' }}>
+        {visitedTabs.has('evals') && <EvalSummaryPanel runId={runId} />}
       </div>
       <div style={{ display: activeTab === 'config' ? 'block' : 'none' }}>
         {visitedTabs.has('config') && <ConfigPanel config={run.config ?? {}} />}
