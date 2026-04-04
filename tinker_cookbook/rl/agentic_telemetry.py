@@ -73,11 +73,31 @@ def _count_tool_calls_in_trajectory(trajectory: Trajectory) -> int:
     return count
 
 
+def _is_error_tool_result(value: object) -> bool:
+    """Check whether a tool result represents an error.
+
+    ``error_tool_result`` in ``tinker_cookbook.tool_use`` formats errors as
+    JSON with an ``"error"`` key (e.g., ``{"error": "some message"}``).
+    We detect this structured pattern rather than naively substring-matching
+    on the word "error", which would false-positive on benign output that
+    happens to contain "error" (e.g., "error rate: 0.01").
+    """
+    s = str(value)
+    try:
+        import json
+
+        data = json.loads(s)
+        return isinstance(data, dict) and "error" in data
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+
+
 def _count_tool_errors_in_trajectory(trajectory: Trajectory) -> int:
     """Count tool execution errors in a trajectory.
 
-    An error is detected when a tool result contains ``"error"`` in its
-    string representation.
+    An error is detected by checking whether the tool result is a JSON
+    object with an ``"error"`` key, which matches the format produced by
+    ``error_tool_result``.
 
     Args:
         trajectory: A completed trajectory from a rollout.
@@ -89,7 +109,7 @@ def _count_tool_errors_in_trajectory(trajectory: Trajectory) -> int:
     for transition in trajectory.transitions:
         for key, value in transition.logs.items():
             if isinstance(key, str) and key.startswith("tool_result_"):
-                if "error" in str(value).lower():
+                if _is_error_tool_result(value):
                     errors += 1
     return errors
 

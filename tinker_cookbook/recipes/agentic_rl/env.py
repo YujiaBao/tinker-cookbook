@@ -156,7 +156,10 @@ class MathAnswerReward:
                 break
 
         if submitted_answer is None:
-            # Agent never called submit_answer -- penalize mildly
+            # Reward shaping: no submission gets -0.5 while a wrong answer gets
+            # 0.0.  This encourages the model to learn to use the submit_answer
+            # tool (a prerequisite for getting anything right) rather than
+            # running out of turns without submitting.
             return -0.5, {"no_submission": 1.0}
 
         # Compare normalized answers
@@ -289,6 +292,25 @@ DEMO_PROBLEMS: list[dict[str, str]] = [
     {"question": "If 3x + 7 = 22, what is x?", "answer": "5"},
     {"question": "What is the average of 15, 22, 31, 44, and 58?", "answer": "34"},
     {"question": "A pizza is cut into 8 slices. If you eat 3 slices, what fraction of the pizza is left? Express as a decimal.", "answer": "0.625"},
+    # Multi-step problems that benefit from intermediate tool use:
+    {"question": "A farmer has a rectangular field that is 150 meters long and 80 meters wide. He wants to fence it and also add a diagonal fence from one corner to the opposite corner. How many meters of fencing does he need in total? Round to 2 decimal places.", "answer": "630.17"},
+    {"question": "What is the sum of all prime numbers less than 50?", "answer": "328"},
+    {"question": "A ball is dropped from 100 meters. Each bounce reaches 60% of the previous height. What is the total distance traveled after 5 bounces (including the initial drop)? Round to 2 decimal places.", "answer": "318.08"},
+    {"question": "Compute 13^7 mod 97.", "answer": "22"},
+    {"question": "A store sells apples at $1.25 each and oranges at $0.85 each. If you buy 17 apples and 23 oranges, and there is 8.5% sales tax, how much do you pay in total? Round to 2 decimal places.", "answer": "44.29"},
+    {"question": "What is the greatest common divisor of 462 and 1071?", "answer": "21"},
+    {"question": "How many ways can you choose 5 items from a set of 20? (i.e., 20 choose 5)", "answer": "15504"},
+    {"question": "A cylinder has radius 3 and height 10. What is its volume? Round to 2 decimal places.", "answer": "282.74"},
+    {"question": "If you compound $5000 at 4% annual interest compounded monthly for 3 years, what is the final amount? Round to 2 decimal places.", "answer": "5636.36"},
+    {"question": "What is the sum of the squares of the first 15 positive integers?", "answer": "1240"},
+    {"question": "A triangle has sides of length 7, 10, and 12. What is its area using Heron's formula? Round to 2 decimal places.", "answer": "34.98"},
+    {"question": "Convert the binary number 11010110 to decimal.", "answer": "214"},
+    {"question": "What is the least common multiple of 18, 24, and 36?", "answer": "72"},
+    {"question": "A recipe calls for 2/3 cup of sugar. If you want to make 2.5 times the recipe, how many cups of sugar do you need? Express as a decimal, rounded to 2 decimal places.", "answer": "1.67"},
+    {"question": "What is the 10th term of the Fibonacci sequence, starting with 1, 1?", "answer": "55"},
+    {"question": "A cone has base radius 4 and slant height 9. What is its total surface area (base + lateral)? Round to 2 decimal places.", "answer": "163.36"},
+    {"question": "Compute the determinant of the 3x3 matrix [[2, 1, 3], [4, -1, 2], [1, 5, -2]].", "answer": "49"},
+    {"question": "How many integers between 1 and 1000 (inclusive) are divisible by 3 or 5 but not both?", "answer": "467"},
 ]
 
 

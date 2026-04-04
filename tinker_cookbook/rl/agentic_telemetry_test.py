@@ -6,6 +6,7 @@ from tinker_cookbook.completers import TokensWithLogprobs
 from tinker_cookbook.rl.agentic_telemetry import (
     _count_tool_calls_in_trajectory,
     _count_tool_errors_in_trajectory,
+    _is_error_tool_result,
     compute_agentic_metrics,
     log_agentic_batch_summary,
     log_agentic_episode,
@@ -123,6 +124,55 @@ class TestToolCounting:
             }),
         ])
         assert _count_tool_errors_in_trajectory(traj) == 0
+
+    def test_no_false_positive_on_error_word_in_output(self):
+        """Output containing 'error' as normal text should NOT be counted."""
+        traj = _make_trajectory([
+            _make_transition(logs={
+                "tool_call_0": "python_exec({})",
+                "tool_result_0": '{"output": "The error rate is 0.01"}',
+            }),
+        ])
+        assert _count_tool_errors_in_trajectory(traj) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: _is_error_tool_result
+# ---------------------------------------------------------------------------
+
+
+class TestIsErrorToolResult:
+    def test_structured_error_json(self):
+        """error_tool_result format: JSON with 'error' key."""
+        import json
+
+        val = json.dumps({"error": "Execution error: NameError"})
+        assert _is_error_tool_result(val) is True
+
+    def test_normal_json_output(self):
+        import json
+
+        val = json.dumps({"output": "42"})
+        assert _is_error_tool_result(val) is False
+
+    def test_json_with_error_word_in_value(self):
+        """Should NOT match when 'error' is a value, not a key."""
+        import json
+
+        val = json.dumps({"output": "The error rate is 0.01"})
+        assert _is_error_tool_result(val) is False
+
+    def test_plain_string(self):
+        assert _is_error_tool_result("just a plain string") is False
+
+    def test_non_string_input(self):
+        assert _is_error_tool_result(12345) is False
+
+    def test_error_key_with_extra_fields(self):
+        import json
+
+        val = json.dumps({"error": "timeout", "details": "5s limit"})
+        assert _is_error_tool_result(val) is True
 
 
 # ---------------------------------------------------------------------------

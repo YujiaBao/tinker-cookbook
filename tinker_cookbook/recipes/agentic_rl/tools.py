@@ -12,6 +12,7 @@ via the ``simple_tool_result`` / ``error_tool_result`` helpers.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import math
 import traceback
@@ -66,17 +67,24 @@ async def calculator(expression: Annotated[str, "A mathematical expression to ev
         )
 
 
+# Default timeout for python_exec in seconds.
+_PYTHON_EXEC_TIMEOUT_SECONDS = 5
+
+
 @tool
 async def python_exec(code: Annotated[str, "Python code to execute. The last expression's value is captured as the result."]) -> ToolResult:
     """Execute Python code in a restricted sandbox and return stdout output.
 
     The sandbox provides a limited set of builtins (no file I/O, no imports
     beyond math). Stdout is captured and returned. Execution is time-limited
-    to prevent infinite loops.
+    to 5 seconds via a thread pool to prevent infinite loops from hanging
+    training.
 
     For production use, replace this with a proper sandbox (e.g., Modal sandbox,
     Docker container, or the tinker_cookbook.sandbox module).
     """
+    # WARNING: This is NOT a security boundary. For production use with untrusted
+    # model-generated code, use a proper sandbox (e.g., tinker_cookbook.sandbox).
     stdout_capture = StringIO()
     restricted_builtins = {
         "print": lambda *args, **kwargs: print(*args, file=stdout_capture, **kwargs),
@@ -102,7 +110,6 @@ async def python_exec(code: Annotated[str, "Python code to execute. The last exp
         "abs": abs,
         "round": round,
         "isinstance": isinstance,
-        "type": type,
         "True": True,
         "False": False,
         "None": None,
@@ -113,14 +120,25 @@ async def python_exec(code: Annotated[str, "Python code to execute. The last exp
         "math": math,
     }
 
-    try:
+    def _run() -> str:
         exec(code, sandbox_globals)  # noqa: S102
         output = stdout_capture.getvalue()
         if not output:
-            output = "(no output)"
+            return "(no output)"
+        return output.strip()
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_run)
+            output = future.result(timeout=_PYTHON_EXEC_TIMEOUT_SECONDS)
         return simple_tool_result(
-            json.dumps({"output": output.strip()}),
+            json.dumps({"output": output}),
             metrics={"python_exec_calls": 1.0},
+        )
+    except concurrent.futures.TimeoutError:
+        return error_tool_result(
+            f"Execution timed out ({_PYTHON_EXEC_TIMEOUT_SECONDS} second limit)",
+            error_type="python_exec_timeout",
         )
     except Exception:
         tb = traceback.format_exc()
