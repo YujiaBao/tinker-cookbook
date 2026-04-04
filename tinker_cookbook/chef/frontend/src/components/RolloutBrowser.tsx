@@ -111,18 +111,53 @@ export function RolloutBrowser({ runId, iterations }: Props) {
   return (
     <div>
       <div className="filters-bar">
-        <div className="filter-group">
+        <div className="filter-group" style={{ flex: '1 1 auto', minWidth: '200px' }}>
           <span className="filter-label">Iteration</span>
-          <select
-            value={selectedIter ?? ''}
-            onChange={(e) => setSelectedIter(Number(e.target.value))}
+          <button
+            className="theme-toggle"
+            onClick={() => {
+              const idx = iterationsWithRollouts.findIndex((it) => it.iteration === selectedIter);
+              if (idx > 0) setSelectedIter(iterationsWithRollouts[idx - 1].iteration);
+            }}
+            disabled={selectedIter === iterationsWithRollouts[0]?.iteration}
+            style={{ opacity: selectedIter === iterationsWithRollouts[0]?.iteration ? 0.3 : 1, padding: '0.1875rem 0.375rem' }}
           >
-            {iterationsWithRollouts.map((it) => (
-              <option key={it.iteration} value={it.iteration}>
-                {it.iteration}
-              </option>
-            ))}
-          </select>
+            Prev
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={iterationsWithRollouts.length - 1}
+            value={iterationsWithRollouts.findIndex((it) => it.iteration === selectedIter)}
+            onChange={(e) => setSelectedIter(iterationsWithRollouts[Number(e.target.value)]?.iteration ?? 0)}
+            style={{ flex: 1, minWidth: '100px', accentColor: 'var(--accent)', cursor: 'pointer' }}
+          />
+          <button
+            className="theme-toggle"
+            onClick={() => {
+              const idx = iterationsWithRollouts.findIndex((it) => it.iteration === selectedIter);
+              if (idx < iterationsWithRollouts.length - 1) setSelectedIter(iterationsWithRollouts[idx + 1].iteration);
+            }}
+            disabled={selectedIter === iterationsWithRollouts[iterationsWithRollouts.length - 1]?.iteration}
+            style={{ opacity: selectedIter === iterationsWithRollouts[iterationsWithRollouts.length - 1]?.iteration ? 0.3 : 1, padding: '0.1875rem 0.375rem' }}
+          >
+            Next
+          </button>
+          <input
+            type="number"
+            value={selectedIter ?? ''}
+            onChange={(e) => {
+              const val = Number(e.target.value);
+              const closest = iterationsWithRollouts.reduce((prev, curr) =>
+                Math.abs(curr.iteration - val) < Math.abs(prev.iteration - val) ? curr : prev
+              );
+              setSelectedIter(closest.iteration);
+            }}
+            style={{ width: '60px' }}
+          />
+          <span className="text-muted" style={{ fontSize: '0.625rem', whiteSpace: 'nowrap' }}>
+            / {iterationsWithRollouts[iterationsWithRollouts.length - 1]?.iteration ?? 0}
+          </span>
         </div>
 
         {availableTags.length > 0 && (

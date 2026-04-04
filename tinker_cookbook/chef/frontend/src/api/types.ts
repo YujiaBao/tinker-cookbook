@@ -96,11 +96,17 @@ export interface TimingResponse {
 }
 
 export interface CheckpointRecord {
-  state_path: string;
   name: string;
-  kind: string;
-  timestamp: number;
-  loop_state: { epoch: number; batch: number };
+  batch?: number;
+  epoch?: number;
+  final?: boolean;
+  kind?: string;
+  state_path?: string;
+  sampler_path?: string;
+  sampler_weights_path?: string;
+  timestamp?: number;
+  loop_state?: { epoch?: number; batch?: number };
+  extra?: Record<string, unknown>;
 }
 
 export interface LogtreeNode {
