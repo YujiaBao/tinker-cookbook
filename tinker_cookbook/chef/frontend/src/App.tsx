@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from 'react';
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
 import { DashboardPage } from './pages/DashboardPage';
 import { RunDetailPage } from './pages/RunDetailPage';
@@ -7,13 +8,38 @@ import { EvalRunDetailPage } from './pages/EvalRunDetailPage';
 import { EvalTrajectoryPage } from './pages/EvalTrajectoryPage';
 import './App.css';
 
+function useTheme() {
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    if (typeof window !== 'undefined') {
+      return (localStorage.getItem('tinker-chef-theme') as 'dark' | 'light') ?? 'dark';
+    }
+    return 'dark';
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('tinker-chef-theme', theme);
+  }, [theme]);
+
+  const toggle = useCallback(() => {
+    setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+  }, []);
+
+  return { theme, toggle };
+}
+
 function App() {
+  const { theme, toggle } = useTheme();
+
   return (
     <BrowserRouter>
       <div className="app">
         <header className="app-header">
-          <Link to="/" className="app-logo">Tinker Chef</Link>
+          <Link to="/" className="app-logo">tinker-chef</Link>
           <span className="app-tagline">Training Dashboard</span>
+          <button className="theme-toggle" onClick={toggle} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
+            {theme === 'dark' ? 'Light' : 'Dark'}
+          </button>
         </header>
         <main className="app-main">
           <Routes>
