@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 read_json_from_storage = storage_read_json
 read_jsonl_from_storage = storage_read_jsonl
 
+# Keep at most this many records in memory per reader.
+# At 20 keys per record, 50K records ≈ 40MB — reasonable for a dashboard.
+_MAX_RECORDS = 50_000
+
 
 class IncrementalJsonlReader:
     """Base class for incremental JSONL file reading with offset tracking.
@@ -23,6 +27,9 @@ class IncrementalJsonlReader:
     Uses ``Storage.stat()`` to check for new data and ``Storage.read()``
     to fetch the full file contents. Tracks how many bytes have been
     parsed so only new lines are processed on each call.
+
+    Records are kept in a bounded ring: once ``_MAX_RECORDS`` is reached,
+    the oldest records are dropped to prevent unbounded memory growth.
     """
 
     def __init__(self, storage: Storage, path: str) -> None:
@@ -30,6 +37,7 @@ class IncrementalJsonlReader:
         self._path = path
         self._offset: int = 0
         self._records: list[dict[str, Any]] = []
+        self._total_read: int = 0  # total records ever read (for metrics)
 
     @property
     def path(self) -> str:
@@ -38,6 +46,11 @@ class IncrementalJsonlReader:
     @property
     def records(self) -> list[dict[str, Any]]:
         return self._records
+
+    @property
+    def total_read(self) -> int:
+        """Total number of records read since creation (including dropped)."""
+        return self._total_read
 
     def read(self) -> list[dict[str, Any]]:
         """Read new lines since last call. Returns only new records."""
@@ -75,6 +88,12 @@ class IncrementalJsonlReader:
                 logger.warning("Skipping malformed JSONL line: %s", line[:100])
 
         self._records.extend(new_records)
+        self._total_read += len(new_records)
+
+        # Bound memory: drop oldest records if over limit
+        if len(self._records) > _MAX_RECORDS:
+            self._records = self._records[-_MAX_RECORDS:]
+
         return new_records
 
     def has_data(self) -> bool:

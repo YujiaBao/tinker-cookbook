@@ -51,6 +51,10 @@ class RunStore:
         """Primary storage (first in list). Used for global operations."""
         return self._storages[0]
 
+    def storage_for(self, run_id: str) -> Storage:
+        """Get the storage that contains a specific run."""
+        return self._run_storage.get(run_id) or self._storages[0]
+
     def _storage_for(self, run_id: str) -> Storage | None:
         return self._run_storage.get(run_id)
 
@@ -63,7 +67,7 @@ class RunStore:
                 source = getattr(storage, "root").name
             for run in discover_runs(storage):
                 # Deduplicate by run_id; first storage wins
-                uid = f"{source}/{run.run_id}" if run.run_id in all_runs else run.run_id
+                uid = f"{source}--{run.run_id}" if run.run_id in all_runs else run.run_id
                 all_runs[uid] = run
                 self._run_storage[uid] = storage
         self._runs = all_runs

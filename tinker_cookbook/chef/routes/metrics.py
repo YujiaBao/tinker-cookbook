@@ -59,8 +59,9 @@ def create_router(store: RunStore) -> APIRouter:
             raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
 
         async def event_generator():
-            # First, ensure we've read existing data
             store.get_metrics(run_id)
+            idle_cycles = 0
+            max_idle_cycles = 40  # 40 * 15s = 10 minutes of no new data
 
             while True:
                 if await request.is_disconnected():
@@ -68,12 +69,16 @@ def create_router(store: RunStore) -> APIRouter:
 
                 new_records = store.get_new_metrics(run_id)
                 if new_records:
+                    idle_cycles = 0
                     for record in new_records:
                         data = json.dumps(record)
                         yield f"data: {data}\n\n"
                 else:
-                    # Send keepalive comment every poll cycle
+                    idle_cycles += 1
                     yield ": keepalive\n\n"
+                    if idle_cycles >= max_idle_cycles:
+                        yield "event: timeout\ndata: {}\n\n"
+                        break
 
                 await asyncio.sleep(15)
 

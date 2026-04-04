@@ -89,8 +89,13 @@ def create_app(
 
         @app.get("/{full_path:path}")
         async def serve_spa(full_path: str) -> FileResponse:
-            static_file = _STATIC_DIR / full_path
-            if static_file.is_file() and not full_path.startswith("api/"):
+            static_file = (_STATIC_DIR / full_path).resolve()
+            # Prevent path traversal
+            if (
+                static_file.is_file()
+                and static_file.is_relative_to(_STATIC_DIR.resolve())
+                and not full_path.startswith("api/")
+            ):
                 return FileResponse(str(static_file))
             return FileResponse(str(_STATIC_DIR / "index.html"))
     else:

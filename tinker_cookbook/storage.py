@@ -78,7 +78,10 @@ class LocalStorage:
         return self._root
 
     def _resolve(self, path: str) -> Path:
-        return self._root / path
+        resolved = (self._root / path).resolve()
+        if not resolved.is_relative_to(self._root):
+            raise ValueError(f"Path escapes storage root: {path}")
+        return resolved
 
     def read(self, path: str) -> bytes:
         return self._resolve(path).read_bytes()

@@ -73,7 +73,8 @@ def create_router(store: RunStore) -> APIRouter:
         run = store.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-        return storage_read_jsonl(store.storage, storage_join(run.prefix, "checkpoints.jsonl"))
+        run_storage = store.storage_for(run_id)
+        return storage_read_jsonl(run_storage, storage_join(run.prefix, "checkpoints.jsonl"))
 
     return router
 
