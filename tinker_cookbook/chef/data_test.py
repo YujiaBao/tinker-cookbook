@@ -527,3 +527,153 @@ class TestRunStore:
         # Refresh should find the new run
         runs = store.refresh_runs()
         assert len(runs) == 3
+
+
+# ── EvalReader tests ──────────────────────────────────────────────────
+
+
+@pytest.fixture
+def tmp_eval_store(tmp_path: Path) -> Path:
+    """Create a minimal eval store directory."""
+    eval_dir = tmp_path / "eval_store"
+    eval_dir.mkdir()
+
+    # runs.jsonl index
+    runs = [
+        {"run_id": "eval_001", "model_name": "Llama-3.1-8B", "timestamp": "2024-04-01T00:00:00"},
+        {"run_id": "eval_002", "model_name": "Llama-3.1-8B-LoRA", "timestamp": "2024-04-02T00:00:00"},
+    ]
+    (eval_dir / "runs.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in runs) + "\n"
+    )
+
+    # eval_001 run
+    run1 = eval_dir / "runs" / "eval_001"
+    run1.mkdir(parents=True)
+    (run1 / "metadata.json").write_text(json.dumps({
+        "run_id": "eval_001",
+        "model_name": "Llama-3.1-8B",
+        "checkpoint_path": None,
+        "checkpoint_name": "base",
+        "benchmarks": ["gsm8k", "mmlu_pro"],
+        "timestamp": "2024-04-01T00:00:00",
+        "scores": {"gsm8k": 0.75, "mmlu_pro": 0.62},
+    }))
+
+    # gsm8k benchmark for eval_001
+    gsm8k_dir = run1 / "gsm8k"
+    gsm8k_dir.mkdir()
+    (gsm8k_dir / "result.json").write_text(json.dumps({
+        "name": "gsm8k",
+        "score": 0.75,
+        "num_examples": 100,
+        "num_correct": 75,
+        "num_errors": 2,
+        "time_seconds": 120.5,
+    }))
+
+    trajectories = []
+    for i in range(3):
+        trajectories.append({
+            "idx": i,
+            "benchmark": "gsm8k",
+            "example_id": f"gsm8k_{i:04d}",
+            "turns": [
+                {"role": "user", "content": f"What is {i}+{i}?", "token_count": 10, "metadata": {}},
+                {"role": "assistant", "content": f"{2*i}", "token_count": 5, "metadata": {}},
+            ],
+            "reward": 1.0 if i < 2 else 0.0,
+            "metrics": {"correct": float(i < 2)},
+            "logs": {"expected": str(2 * i)},
+            "error": None if i < 2 else "Wrong answer",
+            "time_seconds": 1.5 + i * 0.1,
+        })
+    (gsm8k_dir / "trajectories.jsonl").write_text(
+        "\n".join(json.dumps(t) for t in trajectories) + "\n"
+    )
+
+    # eval_002 run (minimal)
+    run2 = eval_dir / "runs" / "eval_002"
+    run2.mkdir(parents=True)
+    (run2 / "metadata.json").write_text(json.dumps({
+        "run_id": "eval_002",
+        "model_name": "Llama-3.1-8B-LoRA",
+        "checkpoint_path": "tinker:///ckpt/lora_001",
+        "checkpoint_name": "step_500",
+        "benchmarks": ["gsm8k"],
+        "timestamp": "2024-04-02T00:00:00",
+        "scores": {"gsm8k": 0.85},
+    }))
+    gsm8k2 = run2 / "gsm8k"
+    gsm8k2.mkdir()
+    (gsm8k2 / "result.json").write_text(json.dumps({
+        "name": "gsm8k",
+        "score": 0.85,
+        "num_examples": 100,
+        "num_correct": 85,
+        "num_errors": 1,
+        "time_seconds": 110.0,
+    }))
+
+    return eval_dir
+
+
+class TestEvalReader:
+    def test_list_eval_runs(self, tmp_eval_store: Path) -> None:
+        from tinker_cookbook.chef.data.eval_reader import EvalReader
+        reader = EvalReader(tmp_eval_store)
+        runs = reader.list_eval_runs()
+        assert len(runs) == 2
+        assert runs[0]["run_id"] == "eval_001"
+
+    def test_get_metadata(self, tmp_eval_store: Path) -> None:
+        from tinker_cookbook.chef.data.eval_reader import EvalReader
+        reader = EvalReader(tmp_eval_store)
+        metadata = reader.get_eval_run_metadata("eval_001")
+        assert metadata is not None
+        assert metadata["model_name"] == "Llama-3.1-8B"
+        assert metadata["scores"]["gsm8k"] == 0.75
+
+    def test_list_benchmarks(self, tmp_eval_store: Path) -> None:
+        from tinker_cookbook.chef.data.eval_reader import EvalReader
+        reader = EvalReader(tmp_eval_store)
+        benchmarks = reader.list_benchmarks("eval_001")
+        assert "gsm8k" in benchmarks
+
+    def test_get_benchmark_result(self, tmp_eval_store: Path) -> None:
+        from tinker_cookbook.chef.data.eval_reader import EvalReader
+        reader = EvalReader(tmp_eval_store)
+        result = reader.get_benchmark_result("eval_001", "gsm8k")
+        assert result is not None
+        assert result["score"] == 0.75
+        assert result["num_correct"] == 75
+
+    def test_get_trajectories(self, tmp_eval_store: Path) -> None:
+        from tinker_cookbook.chef.data.eval_reader import EvalReader
+        reader = EvalReader(tmp_eval_store)
+        trajectories = reader.get_benchmark_trajectories("eval_001", "gsm8k")
+        assert len(trajectories) == 3
+        assert trajectories[0]["example_id"] == "gsm8k_0000"
+        assert len(trajectories[0]["turns"]) == 2
+
+    def test_get_single_trajectory(self, tmp_eval_store: Path) -> None:
+        from tinker_cookbook.chef.data.eval_reader import EvalReader
+        reader = EvalReader(tmp_eval_store)
+        traj = reader.get_single_trajectory("eval_001", "gsm8k", 1)
+        assert traj is not None
+        assert traj["reward"] == 1.0
+
+    def test_get_scores_table(self, tmp_eval_store: Path) -> None:
+        from tinker_cookbook.chef.data.eval_reader import EvalReader
+        reader = EvalReader(tmp_eval_store)
+        table = reader.get_scores_table()
+        assert len(table) == 2
+        assert table[0]["model_name"] == "Llama-3.1-8B"
+        assert table[0]["scores"]["gsm8k"] == 0.75
+        assert table[1]["scores"]["gsm8k"] == 0.85
+
+    def test_nonexistent_run(self, tmp_eval_store: Path) -> None:
+        from tinker_cookbook.chef.data.eval_reader import EvalReader
+        reader = EvalReader(tmp_eval_store)
+        assert reader.get_eval_run_metadata("nonexistent") is None
+        assert reader.list_benchmarks("nonexistent") == []

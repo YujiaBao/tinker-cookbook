@@ -18,6 +18,7 @@ from tinker_cookbook.chef.data.run_discovery import (
     discover_runs,
     list_iterations,
 )
+from tinker_cookbook.chef.data.eval_reader import EvalReader
 from tinker_cookbook.chef.data.timing_reader import TimingReader
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ class RunStore:
         self._rollout_readers: dict[str, RolloutReader] = {}
         self._logtree_readers: dict[str, LogtreeReader] = {}
         self._timing_readers: dict[str, TimingReader] = {}
+        self._eval_readers: dict[str, EvalReader] = {}
 
     @property
     def root(self) -> Path:
@@ -183,3 +185,59 @@ class RunStore:
             return []
         reader.read()
         return reader.records
+
+    # --- Eval Benchmarks ---
+
+    def _get_eval_reader(self, run_id: str) -> EvalReader | None:
+        """Get an EvalReader for a training run's eval data.
+
+        Looks for eval data in several conventional locations relative
+        to the training run directory.
+        """
+        if run_id not in self._eval_readers:
+            path = self._run_path(run_id)
+            if path is None:
+                return None
+            # Check common eval data locations
+            for candidate in [
+                path / "eval",
+                path / "eval_store",
+                path.parent / "eval",  # sibling directory
+            ]:
+                if candidate.is_dir() and (
+                    (candidate / "runs.jsonl").exists()
+                    or (candidate / "runs").is_dir()
+                ):
+                    self._eval_readers[run_id] = EvalReader(candidate)
+                    return self._eval_readers[run_id]
+            # No eval data found — cache the miss as None
+            return None
+        return self._eval_readers.get(run_id)
+
+    def get_eval_reader(self, run_id: str) -> EvalReader | None:
+        return self._get_eval_reader(run_id)
+
+    def get_eval_scores_matrix(self, run_id: str) -> list[dict[str, Any]]:
+        reader = self._get_eval_reader(run_id)
+        if reader is None:
+            return []
+        return reader.get_scores_table()
+
+    # --- Global eval store (not per-run) ---
+
+    def get_global_eval_reader(self) -> EvalReader | None:
+        """Look for eval data at the root level."""
+        if "__global__" not in self._eval_readers:
+            for candidate in [
+                self._root / "eval",
+                self._root / "eval_store",
+                self._root,
+            ]:
+                if candidate.is_dir() and (
+                    (candidate / "runs.jsonl").exists()
+                    or (candidate / "runs").is_dir()
+                ):
+                    self._eval_readers["__global__"] = EvalReader(candidate)
+                    return self._eval_readers["__global__"]
+            return None
+        return self._eval_readers.get("__global__")

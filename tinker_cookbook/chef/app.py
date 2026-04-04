@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from tinker_cookbook.chef.data.store import RunStore
+from tinker_cookbook.chef.routes import evals as eval_routes
 from tinker_cookbook.chef.routes import metrics, rollouts, runs, timing
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,7 @@ def create_app(root: str | Path) -> FastAPI:
     app.include_router(metrics.create_router(store))
     app.include_router(rollouts.create_router(store))
     app.include_router(timing.create_router(store))
+    app.include_router(eval_routes.create_router(store.get_global_eval_reader()))
 
     # Serve pre-built React static files if they exist
     if (_STATIC_DIR / "index.html").exists():
