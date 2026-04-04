@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { SortableTable } from './SortableTable';
 import type { IterationInfo, RolloutSummary } from '../api/types';
 
 interface Props {
@@ -22,22 +23,19 @@ export function RolloutBrowser({ runId, iterations }: Props) {
   const [tagFilter, setTagFilter] = useState<string>('');
   const [loading, setLoading] = useState(false);
 
-  // Select the first iteration with rollouts by default
+  const iterationsWithRollouts = iterations.filter((it) => it.has_train_rollouts);
+
   useEffect(() => {
-    const withRollouts = iterations.filter((it) => it.has_train_rollouts);
-    if (withRollouts.length > 0 && selectedIter === null) {
-      setSelectedIter(withRollouts[0].iteration);
+    if (iterationsWithRollouts.length > 0 && selectedIter === null) {
+      setSelectedIter(iterationsWithRollouts[0].iteration);
     }
   }, [iterations, selectedIter]);
 
-  // Fetch rollouts when iteration or filter changes
   useEffect(() => {
     if (selectedIter === null) return;
     setLoading(true);
     api
-      .getRollouts(runId, selectedIter, {
-        tag: tagFilter || undefined,
-      })
+      .getRollouts(runId, selectedIter, { tag: tagFilter || undefined })
       .then((resp) => {
         setRollouts(resp.rollouts);
         setAvailableTags(resp.available_tags);
@@ -50,7 +48,59 @@ export function RolloutBrowser({ runId, iterations }: Props) {
     return <div className="empty-state">No iteration data available</div>;
   }
 
-  const iterationsWithRollouts = iterations.filter((it) => it.has_train_rollouts);
+  const columns = [
+    {
+      key: 'group',
+      label: 'Group',
+      render: (r: RolloutSummary) => <span className="mono">{r.group_idx}</span>,
+      sortValue: (r: RolloutSummary) => r.group_idx,
+    },
+    {
+      key: 'traj',
+      label: 'Traj',
+      render: (r: RolloutSummary) => <span className="mono">{r.traj_idx}</span>,
+      sortValue: (r: RolloutSummary) => r.traj_idx,
+    },
+    {
+      key: 'tags',
+      label: 'Tags',
+      render: (r: RolloutSummary) => (
+        <>{r.tags.map((tag) => <span key={tag} className="tag">{tag}</span>)}</>
+      ),
+    },
+    {
+      key: 'steps',
+      label: 'Steps',
+      render: (r: RolloutSummary) => <span className="mono">{r.num_steps}</span>,
+      sortValue: (r: RolloutSummary) => r.num_steps,
+    },
+    {
+      key: 'total_reward',
+      label: 'Total Reward',
+      render: (r: RolloutSummary) => (
+        <span className={`reward-badge ${rewardClass(r.total_reward)}`}>
+          {r.total_reward.toFixed(3)}
+        </span>
+      ),
+      sortValue: (r: RolloutSummary) => r.total_reward,
+    },
+    {
+      key: 'final_reward',
+      label: 'Final Reward',
+      render: (r: RolloutSummary) => (
+        <span className={`reward-badge ${rewardClass(r.final_reward)}`}>
+          {r.final_reward.toFixed(3)}
+        </span>
+      ),
+      sortValue: (r: RolloutSummary) => r.final_reward,
+    },
+    {
+      key: 'context',
+      label: 'Context',
+      render: (r: RolloutSummary) => <span className="mono">{r.final_ob_len}</span>,
+      sortValue: (r: RolloutSummary) => r.final_ob_len,
+    },
+  ];
 
   return (
     <div>
@@ -81,62 +131,23 @@ export function RolloutBrowser({ runId, iterations }: Props) {
           </div>
         )}
 
-        <div style={{ marginLeft: 'auto', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+        <div style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
           {rollouts.length} rollout{rollouts.length !== 1 ? 's' : ''}
         </div>
       </div>
 
       {loading ? (
         <div className="loading">Loading rollouts...</div>
-      ) : rollouts.length === 0 ? (
-        <div className="empty-state">No rollouts for this iteration</div>
       ) : (
         <div className="card" style={{ padding: 0, overflow: 'auto' }}>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Group</th>
-                <th>Traj</th>
-                <th>Tags</th>
-                <th>Steps</th>
-                <th>Total Reward</th>
-                <th>Final Reward</th>
-                <th>Context Len</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rollouts.map((r) => (
-                <tr
-                  key={`${r.group_idx}-${r.traj_idx}`}
-                  onClick={() =>
-                    navigate(
-                      `/runs/${runId}/iterations/${selectedIter}/rollouts/${r.group_idx}/${r.traj_idx}`
-                    )
-                  }
-                >
-                  <td className="mono">{r.group_idx}</td>
-                  <td className="mono">{r.traj_idx}</td>
-                  <td>
-                    {r.tags.map((tag) => (
-                      <span key={tag} className="tag">{tag}</span>
-                    ))}
-                  </td>
-                  <td className="mono">{r.num_steps}</td>
-                  <td>
-                    <span className={`reward-badge ${rewardClass(r.total_reward)}`}>
-                      {r.total_reward.toFixed(3)}
-                    </span>
-                  </td>
-                  <td>
-                    <span className={`reward-badge ${rewardClass(r.final_reward)}`}>
-                      {r.final_reward.toFixed(3)}
-                    </span>
-                  </td>
-                  <td className="mono">{r.final_ob_len}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <SortableTable
+            columns={columns}
+            data={rollouts}
+            rowKey={(r) => `${r.group_idx}-${r.traj_idx}`}
+            onRowClick={(r) =>
+              navigate(`/runs/${runId}/iterations/${selectedIter}/rollouts/${r.group_idx}/${r.traj_idx}`)
+            }
+          />
         </div>
       )}
     </div>

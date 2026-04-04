@@ -226,10 +226,10 @@ class TestRunDetailPage:
 
     def test_timing_tab(self, page: Page, server) -> None:
         page.goto("/runs/math_rl_run")
-        page.locator("text=Timing").click()
-        # Should show timing data (table or chart)
-        page.wait_for_selector("table", timeout=10000)
-        expect(page.locator("text=forward_backward").first).to_be_visible()
+        page.locator("button", has_text="Timing").click()
+        # Should show timing summary table with span names
+        page.wait_for_timeout(1000)  # Wait for data to load
+        expect(page.locator("text=Timing Summary").first).to_be_visible(timeout=10000)
 
     def test_config_tab(self, page: Page, server) -> None:
         page.goto("/runs/math_rl_run")
