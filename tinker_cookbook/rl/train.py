@@ -1746,25 +1746,26 @@ async def do_sync_training(
 
             # Dynamic sampling: add oversampled builders from the buffer
             if ds_cfg is not None:
-                num_extra = math.ceil(nominal_batch_size * (ds_cfg.oversample_ratio - 1.0))
-                # Pull from the buffer first
-                extra_builders: list[EnvGroupBuilder] = []
-                while len(extra_builders) < num_extra and ds_buffer:
-                    extra_builders.append(ds_buffer.popleft())
-                # If buffer is exhausted, pull from future dataset batches
-                while len(extra_builders) < num_extra and ds_next_batch_idx < len(dataset):
-                    future_batch = dataset.get_batch(ds_next_batch_idx)
-                    ds_next_batch_idx += 1
-                    for builder in future_batch:
-                        extra_builders.append(builder)
-                        if len(extra_builders) >= num_extra:
-                            break
-                    # Put any remainder into the buffer
-                    if len(extra_builders) > num_extra:
-                        for b in extra_builders[num_extra:]:
-                            ds_buffer.append(b)
-                        extra_builders = extra_builders[:num_extra]
-                env_group_builders_P.extend(extra_builders)
+                async with trace.scope_span("dynamic_sampling_replenish"):
+                    num_extra = math.ceil(nominal_batch_size * (ds_cfg.oversample_ratio - 1.0))
+                    # Pull from the buffer first
+                    extra_builders: list[EnvGroupBuilder] = []
+                    while len(extra_builders) < num_extra and ds_buffer:
+                        extra_builders.append(ds_buffer.popleft())
+                    # If buffer is exhausted, pull from future dataset batches
+                    while len(extra_builders) < num_extra and ds_next_batch_idx < len(dataset):
+                        future_batch = dataset.get_batch(ds_next_batch_idx)
+                        ds_next_batch_idx += 1
+                        for builder in future_batch:
+                            extra_builders.append(builder)
+                            if len(extra_builders) >= num_extra:
+                                break
+                        # Put any remainder into the buffer
+                        if len(extra_builders) > num_extra:
+                            for b in extra_builders[num_extra:]:
+                                ds_buffer.append(b)
+                            extra_builders = extra_builders[:num_extra]
+                    env_group_builders_P.extend(extra_builders)
 
             # Initialize logtree trace for this iteration if logging is enabled
             iter_dir = iteration_dir(config.log_path, i_batch)
@@ -1834,24 +1835,63 @@ async def do_sync_training(
 
                 # Dynamic sampling: filter low-variance groups
                 if ds_cfg is not None:
-                    pre_filter_count = len(trajectory_groups_P)
-                    trajectory_groups_P, num_filtered = filter_low_variance_groups(
-                        trajectory_groups_P,
-                        min_reward_std=ds_cfg.min_reward_std,
-                        max_filter_ratio=ds_cfg.max_filter_ratio,
-                    )
-                    metrics["dynamic_sampling/groups_before_filter"] = pre_filter_count
-                    metrics["dynamic_sampling/groups_after_filter"] = len(trajectory_groups_P)
-                    metrics["dynamic_sampling/groups_filtered"] = num_filtered
-                    metrics["dynamic_sampling/filter_ratio"] = (
-                        num_filtered / pre_filter_count if pre_filter_count > 0 else 0.0
-                    )
-                    metrics["dynamic_sampling/buffer_size"] = len(ds_buffer)
-                    if num_filtered > 0:
-                        logger.info(
-                            f"Dynamic sampling: filtered {num_filtered}/{pre_filter_count} "
-                            f"low-variance groups (kept {len(trajectory_groups_P)})"
+                    async with trace.scope_span("dynamic_sampling_filter"):
+                        n_total = len(trajectory_groups_P)
+
+                        # Compute per-group reward std for metrics before filtering
+                        reward_stds = []
+                        for group in trajectory_groups_P:
+                            rewards = group.get_total_rewards()
+                            std = float(torch.tensor(rewards).std().item()) if len(rewards) > 1 else 0.0
+                            reward_stds.append(std)
+
+                        trajectory_groups_P, n_filtered = filter_low_variance_groups(
+                            trajectory_groups_P,
+                            min_reward_std=ds_cfg.min_reward_std,
+                            max_filter_ratio=ds_cfg.max_filter_ratio,
                         )
+                        n_kept = len(trajectory_groups_P)
+                        filter_ratio = n_filtered / n_total if n_total > 0 else 0.0
+
+                        # Log metrics
+                        metrics["dynamic_sampling/groups_total"] = n_total
+                        metrics["dynamic_sampling/groups_filtered"] = n_filtered
+                        metrics["dynamic_sampling/groups_kept"] = n_kept
+                        metrics["dynamic_sampling/filter_ratio"] = filter_ratio
+                        metrics["dynamic_sampling/buffer_size"] = len(ds_buffer)
+                        if reward_stds:
+                            metrics["dynamic_sampling/reward_std_mean"] = float(
+                                torch.tensor(reward_stds).mean().item()
+                            )
+                            metrics["dynamic_sampling/reward_std_min"] = float(
+                                min(reward_stds)
+                            )
+
+                        # Logtree reporting
+                        with logtree.scope_header("Dynamic Sampling"):
+                            logtree.table_from_dict(
+                                {
+                                    "total_groups": n_total,
+                                    "filtered_groups": n_filtered,
+                                    "kept_groups": n_kept,
+                                    "filter_ratio": f"{filter_ratio:.2%}",
+                                    "reward_std_mean": (
+                                        f"{torch.tensor(reward_stds).mean().item():.4f}"
+                                        if reward_stds
+                                        else "N/A"
+                                    ),
+                                    "reward_std_min": (
+                                        f"{min(reward_stds):.4f}" if reward_stds else "N/A"
+                                    ),
+                                },
+                                caption="Dynamic Sampling Stats",
+                            )
+
+                        if n_filtered > 0:
+                            logger.info(
+                                f"Dynamic sampling: filtered {n_filtered}/{n_total} "
+                                f"low-variance groups (kept {n_kept})"
+                            )
 
                 # Train step
                 sampling_client, train_step_metrics = await do_train_step_and_get_sampling_client(
