@@ -1,7 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { SortableTable } from '../components/SortableTable';
 import type { EvalRunDetail, EvalTrajectorySummary } from '../api/types';
+
+function scoreColor(score: number): string {
+  if (score >= 0.8) return 'var(--success)';
+  if (score >= 0.5) return 'var(--warning)';
+  return 'var(--error)';
+}
 
 export function EvalRunDetailPage() {
   const { evalRunId } = useParams<{ evalRunId: string }>();
@@ -14,32 +21,82 @@ export function EvalRunDetailPage() {
 
   useEffect(() => {
     if (!evalRunId) return;
-    api
-      .getEvalRun(evalRunId)
+    api.getEvalRun(evalRunId)
       .then((data) => {
         setRun(data);
-        if (data.benchmarks.length > 0) {
-          setSelectedBenchmark(data.benchmarks[0]);
-        }
+        if (data.benchmarks.length > 0) setSelectedBenchmark(data.benchmarks[0]);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [evalRunId]);
 
-  // Load trajectories when benchmark or filter changes
   useEffect(() => {
     if (!evalRunId || !selectedBenchmark) return;
-    api
-      .getEvalTrajectories(evalRunId, selectedBenchmark, {
-        correct_only: filter === 'correct',
-        errors_only: filter === 'errors',
-      })
+    api.getEvalTrajectories(evalRunId, selectedBenchmark, {
+      correct_only: filter === 'correct',
+      errors_only: filter === 'errors',
+    })
       .then((resp) => setTrajectories(resp.trajectories))
       .catch(() => setTrajectories([]));
   }, [evalRunId, selectedBenchmark, filter]);
 
   if (loading) return <div className="loading">Loading eval run...</div>;
   if (!run || !evalRunId) return <div className="empty-state">Eval run not found</div>;
+
+  const metadata = run.metadata as Record<string, unknown>;
+
+  const trajColumns = [
+    {
+      key: 'idx',
+      label: '#',
+      render: (t: EvalTrajectorySummary) => <span className="mono">{t.idx}</span>,
+      sortValue: (t: EvalTrajectorySummary) => t.idx,
+    },
+    {
+      key: 'example_id',
+      label: 'Example',
+      render: (t: EvalTrajectorySummary) => (
+        <span className="mono" style={{ fontSize: '0.6875rem' }}>
+          {t.example_id ? t.example_id.slice(0, 12) : '-'}
+        </span>
+      ),
+    },
+    {
+      key: 'reward',
+      label: 'Reward',
+      render: (t: EvalTrajectorySummary) => (
+        <span style={{ color: t.reward > 0 ? 'var(--success)' : 'var(--error)', fontWeight: 600 }}>
+          {t.reward.toFixed(1)}
+        </span>
+      ),
+      sortValue: (t: EvalTrajectorySummary) => t.reward,
+    },
+    {
+      key: 'turns',
+      label: 'Turns',
+      render: (t: EvalTrajectorySummary) => <span className="mono">{t.num_turns}</span>,
+      sortValue: (t: EvalTrajectorySummary) => t.num_turns,
+    },
+    {
+      key: 'time',
+      label: 'Time',
+      render: (t: EvalTrajectorySummary) => <span className="mono">{t.time_seconds.toFixed(1)}s</span>,
+      sortValue: (t: EvalTrajectorySummary) => t.time_seconds,
+    },
+    {
+      key: 'status',
+      label: 'Status',
+      render: (t: EvalTrajectorySummary) => {
+        if (t.error) return <span className="tag" style={{ background: 'rgba(239,68,68,0.15)', color: 'var(--error)' }}>Error</span>;
+        if (t.reward > 0) return <span className="tag" style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success)' }}>Correct</span>;
+        return <span className="tag">Wrong</span>;
+      },
+    },
+  ];
+
+  // Count correct/errors for the filter bar
+  const correctCount = trajectories.filter((t) => t.reward > 0).length;
+  const errorCount = trajectories.filter((t) => t.error).length;
 
   return (
     <div>
@@ -49,14 +106,13 @@ export function EvalRunDetailPage() {
         <span>{evalRunId}</span>
       </div>
 
-      <h2 style={{ marginBottom: '0.5rem' }}>{evalRunId}</h2>
-      <div style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1rem' }}>
-        {(run.metadata as Record<string, unknown>).model_name as string} ·{' '}
-        {(run.metadata as Record<string, unknown>).checkpoint_name as string ?? 'No checkpoint'}
+      <h2 className="page-title">{evalRunId}</h2>
+      <div className="page-subtitle">
+        {metadata.model_name as string} · {metadata.checkpoint_name as string ?? 'No checkpoint'}
       </div>
 
-      {/* Benchmark results cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '12px', marginBottom: '1.5rem' }}>
+      {/* Benchmark result cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '0.625rem', marginBottom: '1rem' }}>
         {Object.entries(run.results).map(([name, result]) => (
           <div
             key={name}
@@ -64,23 +120,20 @@ export function EvalRunDetailPage() {
             style={{
               cursor: 'pointer',
               borderColor: selectedBenchmark === name ? 'var(--accent)' : undefined,
+              padding: '0.75rem',
             }}
             onClick={() => setSelectedBenchmark(name)}
           >
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+            <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
               {name}
             </div>
-            <div style={{ fontSize: '1.5rem', fontWeight: 700, color: scoreColor(result.score) }}>
+            <div style={{ fontSize: '1.375rem', fontWeight: 700, color: scoreColor(result.score), fontVariantNumeric: 'tabular-nums' }}>
               {(result.score * 100).toFixed(1)}%
             </div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+            <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)', marginTop: '0.125rem' }}>
               {result.num_correct}/{result.num_examples}
-              {result.num_errors > 0 && (
-                <span style={{ color: 'var(--error)' }}> ({result.num_errors} errors)</span>
-              )}
-            </div>
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-              {result.time_seconds.toFixed(1)}s
+              {result.num_errors > 0 && <span style={{ color: 'var(--error)' }}> · {result.num_errors} err</span>}
+              {' · '}{result.time_seconds.toFixed(0)}s
             </div>
           </div>
         ))}
@@ -91,75 +144,25 @@ export function EvalRunDetailPage() {
         <>
           <div className="filters-bar">
             <div className="filter-group">
-              <span className="filter-label">Filter</span>
+              <span className="filter-label">Show</span>
               <select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)}>
-                <option value="all">All</option>
-                <option value="correct">Correct only</option>
-                <option value="errors">Errors only</option>
+                <option value="all">All ({trajectories.length})</option>
+                <option value="correct">Correct ({correctCount})</option>
+                <option value="errors">Errors ({errorCount})</option>
               </select>
-            </div>
-            <div style={{ marginLeft: 'auto', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              {trajectories.length} trajectories
             </div>
           </div>
 
           <div className="card" style={{ padding: 0, overflow: 'auto' }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Example ID</th>
-                  <th>Reward</th>
-                  <th>Turns</th>
-                  <th>Time</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {trajectories.map((traj) => (
-                  <tr
-                    key={traj.idx}
-                    onClick={() =>
-                      navigate(`/eval/${evalRunId}/${selectedBenchmark}/${traj.idx}`)
-                    }
-                  >
-                    <td className="mono">{traj.idx}</td>
-                    <td className="mono" style={{ fontSize: '0.75rem' }}>
-                      {traj.example_id ? traj.example_id.slice(0, 12) : '-'}
-                    </td>
-                    <td>
-                      <span style={{ color: traj.reward > 0 ? 'var(--success)' : 'var(--error)', fontWeight: 600 }}>
-                        {traj.reward.toFixed(1)}
-                      </span>
-                    </td>
-                    <td className="mono">{traj.num_turns}</td>
-                    <td className="mono">{traj.time_seconds.toFixed(1)}s</td>
-                    <td>
-                      {traj.error ? (
-                        <span className="tag" style={{ background: 'rgba(239,68,68,0.15)', color: 'var(--error)' }}>
-                          Error
-                        </span>
-                      ) : traj.reward > 0 ? (
-                        <span className="tag" style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success)' }}>
-                          Correct
-                        </span>
-                      ) : (
-                        <span className="tag">Wrong</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <SortableTable
+              columns={trajColumns}
+              data={trajectories}
+              rowKey={(t) => String(t.idx)}
+              onRowClick={(t) => navigate(`/eval/${evalRunId}/${selectedBenchmark}/${t.idx}`)}
+            />
           </div>
         </>
       )}
     </div>
   );
-}
-
-function scoreColor(score: number): string {
-  if (score >= 0.8) return 'var(--success)';
-  if (score >= 0.5) return 'var(--warning)';
-  return 'var(--error)';
 }
