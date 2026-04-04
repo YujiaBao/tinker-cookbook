@@ -45,7 +45,7 @@ from tinker_cookbook.rl.rollout_logging import (
     rollout_summaries_jsonl_path,
     write_rollout_summaries_jsonl_from_groups,
 )
-from tinker_cookbook.rl.rollout_cache import CachedRolloutEntry, RolloutCache
+from tinker_cookbook.rl.rollout_retry_queue import RetryEntry, RolloutRetryQueue
 from tinker_cookbook.rl.rollout_strategy import (
     RolloutStrategy,
     rollout_strategy_from_config,
@@ -195,37 +195,37 @@ def _get_logtree_scope(
             logtree.write_trace_json(logtree_trace, logtree_json_path)
 
 
-def _log_rollout_cache_to_logtree(
-    cache: RolloutCache,
-    resumable: list[CachedRolloutEntry],
+def _log_retry_queue_to_logtree(
+    queue: RolloutRetryQueue,
+    resumable: list[RetryEntry],
 ) -> None:
-    """Log rollout cache statistics to the active logtree trace.
+    """Log retry queue statistics to the active logtree trace.
 
     Safe to call when logtree logging is disabled -- all logtree calls
     degrade gracefully to no-ops.
     """
-    stats = cache.stats()
-    with logtree.scope_header("Rollout Cache"):
+    stats = queue.stats()
+    with logtree.scope_header("Retry Queue"):
         logtree.table_from_dict(
             {
-                "cache_size": stats.current_size,
+                "queue_size": stats.current_size,
                 "hits": stats.step.hits,
                 "misses": stats.step.misses,
                 "hit_rate": f"{stats.step.hit_rate:.2%}",
                 "evicted": stats.step.evicted,
+                "evicted_max_attempts": stats.step.evicted_max_attempts,
                 "cached_this_step": stats.step.cached_this_step,
-                "compute_saved_estimate": stats.step.compute_saved_estimate,
             },
-            caption="Cache Statistics",
+            caption="Retry Queue Statistics",
         )
         if resumable:
-            with logtree.scope_details("Cached Entries"):
+            with logtree.scope_details("Retry Entries"):
                 for entry in resumable:
                     logtree.log_text(
-                        f"Steps: {entry.cached_at_step}, "
+                        f"Step: {entry.cached_at_step}, "
+                        f"Original step: {entry.original_step}, "
                         f"Reason: {entry.reason.value}, "
-                        f"Attempt: {entry.attempt_count}, "
-                        f"Partial trajectories: {len(entry.partial_trajectories)}"
+                        f"Attempt: {entry.attempt_count}"
                     )
 
 
@@ -557,14 +557,22 @@ class Config:
     max_steps: int | None = None
 
     # -------------------------------------------------------------------------
-    # Partial rollout caching (advanced)
+    # Retry queue for failed rollouts (advanced)
     # -------------------------------------------------------------------------
-    # When enabled, rollout groups that are filtered (constant reward) or
-    # errored are cached so their EnvGroupBuilder can be retried in later
-    # iterations.
-    rollout_cache_enabled: bool = False
-    # Maximum age (in training steps) for a cached entry to be retried.
-    rollout_cache_max_age_steps: int = 3
+    # When enabled, rollout groups that fail (errors, all-failed) are queued
+    # so their EnvGroupBuilder can be retried in later iterations.
+    # Note: constant-reward groups are NOT retried (same problem + model +
+    # temperature will likely produce constant rewards again).
+    retry_queue_enabled: bool = False
+    # Maximum age (in training steps) for a queued entry to be retried.
+    retry_queue_max_age_steps: int = 3
+    # Maximum number of retry attempts per entry before eviction.
+    retry_queue_max_attempts: int = 3
+    # Maximum number of entries the retry queue can hold.
+    retry_queue_max_size: int = 1000
+    # Maximum number of retry entries to inject per training step.
+    # None means no cap (all eligible entries are injected).
+    retry_queue_max_entries_per_step: int | None = None
 
 
 @trace.scope
@@ -720,8 +728,15 @@ async def do_sync_training_with_stream_minibatch(
         config.ttl_seconds,
     )
 
-    # Create rollout cache if enabled
-    rollout_cache: RolloutCache | None = RolloutCache() if config.rollout_cache_enabled else None
+    # Create retry queue if enabled
+    retry_queue: RolloutRetryQueue | None = (
+        RolloutRetryQueue(
+            max_size=config.retry_queue_max_size,
+            max_attempts=config.retry_queue_max_attempts,
+        )
+        if config.retry_queue_enabled
+        else None
+    )
 
     for i_batch in range(start_batch, end_batch):
         metrics: dict[str, Any] = {
@@ -758,30 +773,34 @@ async def do_sync_training_with_stream_minibatch(
                 )
 
                 # Retrieve resumable entries from cache and add to current batch
-                if rollout_cache is not None:
-                    rollout_cache.reset_step_stats()
+                if retry_queue is not None:
+                    retry_queue.reset_step_stats()
                     n_fresh = len(env_group_builders_P)
-                    async with trace.scope_span("rollout_cache_retrieve"):
-                        resumable = rollout_cache.get_resumable(
+                    with trace.scope_span_sync("retry_queue_retrieve"):
+                        resumable = retry_queue.get_resumable(
                             current_step=i_batch,
-                            max_age_steps=config.rollout_cache_max_age_steps,
+                            max_age_steps=config.retry_queue_max_age_steps,
+                            max_entries_per_step=config.retry_queue_max_entries_per_step,
                         )
                     if resumable:
                         logger.info(
-                            "Resuming %d cached rollout groups in batch %d",
+                            "Retrying %d queued rollout groups in batch %d "
+                            "(batch size: %d -> %d)",
                             len(resumable),
                             i_batch,
+                            n_fresh,
+                            n_fresh + len(resumable),
                         )
                         env_group_builders_P.extend(
                             entry.env_group_builder for entry in resumable
                         )
-                    rollout_cache.record_misses(n_fresh)
-                    async with trace.scope_span("rollout_cache_evict"):
-                        rollout_cache.clear_expired(
+                    retry_queue.record_misses(n_fresh)
+                    with trace.scope_span_sync("retry_queue_evict"):
+                        retry_queue.clear_expired(
                             current_step=i_batch,
-                            max_age_steps=config.rollout_cache_max_age_steps,
+                            max_age_steps=config.retry_queue_max_age_steps,
                         )
-                    _log_rollout_cache_to_logtree(rollout_cache, resumable)
+                    _log_retry_queue_to_logtree(retry_queue, resumable)
 
                 @trace.scope
                 async def trajectory_group_worker_task(
@@ -798,7 +817,7 @@ async def do_sync_training_with_stream_minibatch(
                             do_remove_constant_reward_groups=config.remove_constant_reward_groups,
                             enable_logging=enable_logging,
                             strategy=strategy,
-                            rollout_cache=rollout_cache,
+                            retry_queue=retry_queue,
                             current_step=i_batch,
                         )
                     worker_metrics["time/trajectory_group_worker_loop/total"] = (
@@ -870,8 +889,8 @@ async def do_sync_training_with_stream_minibatch(
         metrics.update(full_batch_metrics)
         if error_counter is not None:
             metrics.update(error_counter.get_metrics())
-        if rollout_cache is not None:
-            metrics.update(rollout_cache.stats().as_metrics())
+        if retry_queue is not None:
+            metrics.update(retry_queue.stats().as_metrics())
         metrics.update(window.get_timing_metrics())
         window.write_spans_jsonl(Path(config.log_path) / "timing_spans.jsonl", step=i_batch)
         if (
@@ -991,8 +1010,15 @@ async def do_async_training(
     """
     assert config.async_config is not None
 
-    # Create rollout cache if enabled
-    rollout_cache: RolloutCache | None = RolloutCache() if config.rollout_cache_enabled else None
+    # Retry queue is not supported in async mode: the decoupled worker/training
+    # loops make it hard to inject retried entries without changing batch size
+    # semantics.  Warn and disable rather than silently leaking memory.
+    if config.retry_queue_enabled:
+        logger.warning(
+            "retry_queue_enabled is not supported in async training mode — "
+            "disabling retry queue. Use sync or streaming-minibatch mode instead."
+        )
+    retry_queue: RolloutRetryQueue | None = None
 
     # We will have groups_per_batch workers generating rollouts, so cap the
     # queue size to be groups_per_batch.
@@ -1070,7 +1096,7 @@ async def do_async_training(
                     temperature=config.temperature,
                     do_remove_constant_reward_groups=config.remove_constant_reward_groups,
                     strategy=strategy,
-                    rollout_cache=rollout_cache,
+                    retry_queue=retry_queue,
                     current_step=sampling_client_step_copy,
                 )
             worker_metrics["time/trajectory_group_worker_loop/total"] = time.time() - t_start
@@ -1142,8 +1168,8 @@ async def do_async_training(
                     return False
                 return True
 
-            if rollout_cache is not None:
-                rollout_cache.reset_step_stats()
+            if retry_queue is not None:
+                retry_queue.reset_step_stats()
 
             metrics: dict[str, Any] = {
                 "training_client/step": i_batch,
@@ -1268,8 +1294,8 @@ async def do_async_training(
             metrics.update(train_step_metrics)
             if error_counter is not None:
                 metrics.update(error_counter.get_metrics())
-            if rollout_cache is not None:
-                metrics.update(rollout_cache.stats().as_metrics())
+            if retry_queue is not None:
+                metrics.update(retry_queue.stats().as_metrics())
             metrics.update(window.get_timing_metrics())
             window.write_spans_jsonl(Path(config.log_path) / "timing_spans.jsonl", step=i_batch)
             if config.span_chart_every > 0 and i_batch % config.span_chart_every == 0:
@@ -1778,8 +1804,15 @@ async def do_sync_training(
         config.ttl_seconds,
     )
 
-    # Create rollout cache if enabled
-    rollout_cache: RolloutCache | None = RolloutCache() if config.rollout_cache_enabled else None
+    # Create retry queue if enabled
+    retry_queue: RolloutRetryQueue | None = (
+        RolloutRetryQueue(
+            max_size=config.retry_queue_max_size,
+            max_attempts=config.retry_queue_max_attempts,
+        )
+        if config.retry_queue_enabled
+        else None
+    )
 
     for i_batch in range(start_batch, end_batch):
         metrics: dict[str, Any] = {
@@ -1800,30 +1833,34 @@ async def do_sync_training(
             env_group_builders_P: list[EnvGroupBuilder] = list(dataset.get_batch(i_batch))
 
             # Retrieve resumable entries from cache and add to current batch
-            resumable: list[CachedRolloutEntry] = []
-            if rollout_cache is not None:
-                rollout_cache.reset_step_stats()
+            resumable: list[RetryEntry] = []
+            if retry_queue is not None:
+                retry_queue.reset_step_stats()
                 n_fresh = len(env_group_builders_P)
-                async with trace.scope_span("rollout_cache_retrieve"):
-                    resumable = rollout_cache.get_resumable(
+                with trace.scope_span_sync("retry_queue_retrieve"):
+                    resumable = retry_queue.get_resumable(
                         current_step=i_batch,
-                        max_age_steps=config.rollout_cache_max_age_steps,
+                        max_age_steps=config.retry_queue_max_age_steps,
+                        max_entries_per_step=config.retry_queue_max_entries_per_step,
                     )
                 if resumable:
                     logger.info(
-                        "Resuming %d cached rollout groups in batch %d",
+                        "Retrying %d queued rollout groups in batch %d "
+                        "(batch size: %d -> %d)",
                         len(resumable),
                         i_batch,
+                        n_fresh,
+                        n_fresh + len(resumable),
                     )
                     env_group_builders_P.extend(
                         entry.env_group_builder for entry in resumable
                     )
-                rollout_cache.record_misses(n_fresh)
+                retry_queue.record_misses(n_fresh)
                 # Evict stale entries
-                async with trace.scope_span("rollout_cache_evict"):
-                    rollout_cache.clear_expired(
+                with trace.scope_span_sync("retry_queue_evict"):
+                    retry_queue.clear_expired(
                         current_step=i_batch,
-                        max_age_steps=config.rollout_cache_max_age_steps,
+                        max_age_steps=config.retry_queue_max_age_steps,
                     )
 
             # Initialize logtree trace for this iteration if logging is enabled
@@ -1835,8 +1872,8 @@ async def do_sync_training(
                     f_name="train",
                     scope_name=f"RL Iteration {i_batch}",
                 ):
-                    if rollout_cache is not None:
-                        _log_rollout_cache_to_logtree(rollout_cache, resumable)
+                    if retry_queue is not None:
+                        _log_retry_queue_to_logtree(retry_queue, resumable)
                     # Note: do_remove_constant_reward_groups=False here because we remove
                     # constant reward groups after all rollouts are collected (below)
                     results_P = await gather_with_progress(
@@ -1849,7 +1886,7 @@ async def do_sync_training(
                                 do_remove_constant_reward_groups=False,
                                 enable_logging=i < config.num_groups_to_log,
                                 strategy=strategy,
-                                rollout_cache=rollout_cache,
+                                retry_queue=retry_queue,
                                 current_step=i_batch,
                             )
                             for i, builder in enumerate(env_group_builders_P)
@@ -1918,8 +1955,8 @@ async def do_sync_training(
         metrics.update(window.get_timing_metrics())
         if error_counter is not None:
             metrics.update(error_counter.get_metrics())
-        if rollout_cache is not None:
-            metrics.update(rollout_cache.stats().as_metrics())
+        if retry_queue is not None:
+            metrics.update(retry_queue.stats().as_metrics())
         window.write_spans_jsonl(Path(config.log_path) / "timing_spans.jsonl", step=i_batch)
         if (
             config.span_chart_every > 0

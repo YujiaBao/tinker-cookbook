@@ -11,7 +11,7 @@ import tinker
 
 from tinker_cookbook.completers import TinkerTokenCompleter, TokenCompleter
 from tinker_cookbook.exceptions import AllTrajectoriesFailedError
-from tinker_cookbook.rl.rollout_cache import CacheReason, RolloutCache
+from tinker_cookbook.rl.rollout_retry_queue import RetryReason, RolloutRetryQueue
 from tinker_cookbook.utils import trace
 from tinker_cookbook.rl.rollout_strategy import FailFast, RolloutStrategy
 from tinker_cookbook.rl.types import (
@@ -352,7 +352,7 @@ async def do_group_rollout_and_filter_constant_reward(
     do_remove_constant_reward_groups: bool,
     enable_logging: bool = True,
     strategy: RolloutStrategy | None = None,
-    rollout_cache: RolloutCache | None = None,
+    retry_queue: RolloutRetryQueue | None = None,
     current_step: int = 0,
 ) -> TrajectoryGroup | None:
     """Run a group rollout, optionally dispatching to an external executor.
@@ -381,12 +381,13 @@ async def do_group_rollout_and_filter_constant_reward(
         strategy (RolloutStrategy | None): Controls how trajectories are
             collected within the group (error handling, retries, etc.).
             Defaults to :class:`FailFast`.
-        rollout_cache (RolloutCache | None): Optional cache for storing
-            partial rollout results when groups are filtered or errored.
-            When provided, discarded groups are cached for potential
-            resumption in later iterations.
+        retry_queue (RolloutRetryQueue | None): Optional retry queue for
+            storing failed rollout groups. When provided, groups that fail
+            due to errors are queued for retry in later iterations.
+            Constant-reward groups are NOT queued (retrying them is
+            unlikely to help).
         current_step (int): Current training iteration index, used for
-            cache entry timestamps. Defaults to 0.
+            queue entry timestamps. Defaults to 0.
 
     Returns:
         TrajectoryGroup | None: The completed trajectory group, or ``None``
@@ -421,9 +422,9 @@ async def do_group_rollout_and_filter_constant_reward(
             current_step=current_step,
         )
         loop = asyncio.get_running_loop()
-        # Note: rollout_cache is not passed to the executor because it is not
+        # Note: retry_queue is not passed to the executor because it is not
         # pickleable (contains references to EnvGroupBuilder instances).  The
-        # caller is responsible for caching based on the None return value.
+        # caller is responsible for queuing based on the None return value.
         return await loop.run_in_executor(executor, _run_rollout_sync, task)
 
     return await _do_group_rollout_and_filter_constant_reward_impl(
@@ -434,7 +435,7 @@ async def do_group_rollout_and_filter_constant_reward(
         do_remove_constant_reward_groups,
         enable_logging,
         strategy=strategy,
-        rollout_cache=rollout_cache,
+        retry_queue=retry_queue,
         current_step=current_step,
     )
 
@@ -447,7 +448,7 @@ async def _do_group_rollout_and_filter_constant_reward_impl(
     do_remove_constant_reward_groups: bool,
     enable_logging: bool = True,
     strategy: RolloutStrategy | None = None,
-    rollout_cache: RolloutCache | None = None,
+    retry_queue: RolloutRetryQueue | None = None,
     current_step: int = 0,
 ) -> TrajectoryGroup | None:
     if strategy is None:
@@ -465,12 +466,11 @@ async def _do_group_rollout_and_filter_constant_reward_impl(
     except AllTrajectoriesFailedError as e:
         # All retries exhausted — already logged per-trajectory inside the strategy
         logger.warning(str(e))
-        if rollout_cache is not None:
-            with trace.scope_span_sync("rollout_cache_store"):
-                rollout_cache.cache_partial(
+        if retry_queue is not None:
+            with trace.scope_span_sync("retry_queue_store"):
+                retry_queue.enqueue(
                     env_group_builder=env_group_builder,
-                    partial_trajectories=[],
-                    reason=CacheReason.ALL_FAILED,
+                    reason=RetryReason.ALL_FAILED,
                     current_step=current_step,
                 )
         return None
@@ -478,25 +478,18 @@ async def _do_group_rollout_and_filter_constant_reward_impl(
         if not strategy.catches_group_errors:
             raise
         logger.warning(f"Rollout error ({type(e).__name__}), skipping group: {e}")
-        if rollout_cache is not None:
-            with trace.scope_span_sync("rollout_cache_store"):
-                rollout_cache.cache_partial(
+        if retry_queue is not None:
+            with trace.scope_span_sync("retry_queue_store"):
+                retry_queue.enqueue(
                     env_group_builder=env_group_builder,
-                    partial_trajectories=[],
-                    reason=CacheReason.ROLLOUT_ERROR,
+                    reason=RetryReason.ROLLOUT_ERROR,
                     current_step=current_step,
                 )
         return None
 
-    # Remove if all trajectories have the same reward
+    # Remove if all trajectories have the same reward.
+    # Note: constant-reward groups are NOT queued for retry because the same
+    # problem/model/temperature will likely produce constant rewards again.
     if do_remove_constant_reward_groups and all_same(trajectory_group.get_total_rewards()):
-        if rollout_cache is not None:
-            with trace.scope_span_sync("rollout_cache_store"):
-                rollout_cache.cache_partial(
-                    env_group_builder=env_group_builder,
-                    partial_trajectories=list(trajectory_group.trajectories_G),
-                    reason=CacheReason.CONSTANT_REWARD,
-                    current_step=current_step,
-                )
         return None
     return trajectory_group
