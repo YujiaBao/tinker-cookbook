@@ -226,7 +226,7 @@ class TestRunDetailPage:
         page.goto("/runs/math_rl_run")
         page.locator("button", has_text="Timing").click()
         page.wait_for_timeout(1000)
-        expect(page.locator("text=Timing Summary").first).to_be_visible(timeout=10000)
+        expect(page.locator("text=Wall Time per Step").first).to_be_visible(timeout=10000)
 
     def test_config_tab(self, page: Page, server) -> None:
         page.goto("/runs/math_rl_run")
