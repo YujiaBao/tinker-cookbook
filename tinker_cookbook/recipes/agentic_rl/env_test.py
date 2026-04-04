@@ -62,7 +62,7 @@ class TestNormalizeNumber:
 
 class TestMathAnswerReward:
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def _make_history_with_submission(self, answer: str) -> list[dict]:
         return [
