@@ -6,12 +6,10 @@ import { MetricsPanel } from '../components/MetricsPanel';
 import { RolloutBrowser } from '../components/RolloutBrowser';
 import { RunOverviewPanel } from '../components/RunOverviewPanel';
 import { TimingPanel } from '../components/TimingPanel';
+import { StatusBadge, TypeBadge } from '../utils/shared';
 import type { IterationInfo, RunInfo } from '../api/types';
 
 type Tab = 'overview' | 'metrics' | 'rollouts' | 'checkpoints' | 'timing' | 'config';
-
-const TYPE_LABELS: Record<string, string> = { rl: 'RL', sl: 'SFT', dpo: 'DPO' };
-const TYPE_COLORS: Record<string, string> = { rl: '#6366f1', sl: '#22c55e', dpo: '#f59e0b' };
 
 export function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>();
@@ -62,17 +60,8 @@ export function RunDetailPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.75rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <h2 className="page-title">{runId}</h2>
-          {run.training_type && (
-            <span className="tag" style={{ background: `${TYPE_COLORS[run.training_type]}22`, color: TYPE_COLORS[run.training_type] }}>
-              {TYPE_LABELS[run.training_type]}
-            </span>
-          )}
-          <span className="badge" style={{
-            background: run.status === 'running' ? 'rgba(34,197,94,0.15)' : run.status === 'completed' ? 'rgba(99,102,241,0.15)' : 'rgba(100,116,139,0.15)',
-            color: run.status === 'running' ? 'var(--success)' : run.status === 'completed' ? '#818cf8' : 'var(--text-muted)',
-          }}>
-            {run.status}
-          </span>
+          <TypeBadge type={run.training_type} />
+          <StatusBadge status={run.status} />
         </div>
         <div className="text-muted" style={{ fontSize: '0.8125rem' }}>
           {run.config_summary?.model_name as string ?? ''}

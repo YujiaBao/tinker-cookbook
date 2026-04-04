@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { MetaField, rewardColor } from '../utils/shared';
 import type { RolloutDetail, RolloutSummary, LogtreeNode, LogtreeResponse } from '../api/types';
 
 export function RolloutDetailPage() {
@@ -207,21 +208,6 @@ export function RolloutDetailPage() {
       </div>
     </div>
   );
-}
-
-function MetaField({ label, value, color }: { label: string; value: string; color?: string }) {
-  return (
-    <div>
-      <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)', marginBottom: '2px' }}>{label}</div>
-      <div className="mono" style={{ fontWeight: 600, color: color ?? 'var(--text-primary)' }}>{value}</div>
-    </div>
-  );
-}
-
-function rewardColor(reward: number): string {
-  if (reward >= 0.8) return 'var(--reward-high)';
-  if (reward >= 0.3) return 'var(--reward-mid)';
-  return 'var(--reward-low)';
 }
 
 function LogtreeConversation({ node }: { node: LogtreeNode }) {

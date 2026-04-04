@@ -6,8 +6,12 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from tinker_cookbook.chef.data.io import read_json, read_jsonl
+
+Status = Literal["running", "completed", "idle"]
+TrainingType = Literal["rl", "sl", "dpo"]
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +32,9 @@ class RunInfo:
     has_checkpoints: bool
     has_timing: bool
     iteration_count: int
-    status: str  # "running" | "completed" | "idle"
-    last_updated: float | None  # mtime of metrics.jsonl (epoch seconds)
-    training_type: str | None  # "rl" | "sl" | "dpo" | None
+    status: Status
+    last_updated: float | None
+    training_type: TrainingType | None
 
 
 @dataclass

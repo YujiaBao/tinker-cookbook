@@ -1,25 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { StatusBadge, TypeBadge, scoreColor, timeAgo } from '../utils/shared';
 import type { RunInfo, ScoresTableRow } from '../api/types';
-
-const TYPE_LABELS: Record<string, string> = { rl: 'RL', sl: 'SFT', dpo: 'DPO' };
-const TYPE_COLORS: Record<string, string> = { rl: '#6366f1', sl: '#22c55e', dpo: '#f59e0b' };
-const STATUS_LABELS: Record<string, string> = { running: 'Running', completed: 'Completed', idle: 'Idle' };
-
-function scoreColor(score: number): string {
-  if (score >= 0.8) return 'var(--success)';
-  if (score >= 0.5) return 'var(--warning)';
-  return 'var(--error)';
-}
-
-function timeAgo(ts: number): string {
-  const seconds = Math.floor(Date.now() / 1000 - ts);
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
-}
 
 export function DashboardPage() {
   const [runs, setRuns] = useState<RunInfo[]>([]);
@@ -44,7 +27,7 @@ export function DashboardPage() {
   if (loading) return <div className="loading">Loading dashboard...</div>;
 
   const activeRuns = runs.filter((r) => r.status === 'running');
-  const recentRuns = runs.slice(0, 8);
+  const displayedRuns = showAllRuns ? runs : runs.slice(0, 5);
 
   // Collect benchmark names from scores
   const benchmarks = new Set<string>();
@@ -148,15 +131,11 @@ export function DashboardPage() {
             </tr>
           </thead>
           <tbody>
-            {(showAllRuns || runs.length <= 5 ? recentRuns : recentRuns.slice(0, 3)).map((run) => (
+            {displayedRuns.map((run) => (
               <tr key={run.run_id} onClick={() => navigate(`/runs/${run.run_id}`)}>
                 <td className="mono" style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{run.run_id}</td>
                 <td>
-                  {run.training_type && (
-                    <span className="tag" style={{ background: `${TYPE_COLORS[run.training_type]}22`, color: TYPE_COLORS[run.training_type] }}>
-                      {TYPE_LABELS[run.training_type]}
-                    </span>
-                  )}
+                  <TypeBadge type={run.training_type} />
                 </td>
                 <td>{run.config_summary?.model_name as string ?? '-'}</td>
                 <td>
@@ -192,11 +171,7 @@ function RunCard({ run, onClick }: { run: RunInfo; onClick: () => void }) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
-          {run.training_type && (
-            <span className="tag" style={{ background: `${TYPE_COLORS[run.training_type]}22`, color: TYPE_COLORS[run.training_type] }}>
-              {TYPE_LABELS[run.training_type]}
-            </span>
-          )}
+          <TypeBadge type={run.training_type} />
           <StatusBadge status={run.status} />
         </div>
       </div>
@@ -209,17 +184,3 @@ function RunCard({ run, onClick }: { run: RunInfo; onClick: () => void }) {
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, { bg: string; fg: string }> = {
-    running: { bg: 'rgba(34, 197, 94, 0.15)', fg: 'var(--success)' },
-    completed: { bg: 'rgba(99, 102, 241, 0.15)', fg: '#818cf8' },
-    idle: { bg: 'rgba(100, 116, 139, 0.15)', fg: 'var(--text-muted)' },
-  };
-  const c = colors[status] ?? colors.idle;
-  return (
-    <span className="badge" style={{ background: c.bg, color: c.fg }}>
-      {status === 'running' && <span style={{ width: 6, height: 6, borderRadius: '50%', background: c.fg, animation: 'pulse 2s infinite' }} />}
-      {STATUS_LABELS[status] ?? status}
-    </span>
-  );
-}

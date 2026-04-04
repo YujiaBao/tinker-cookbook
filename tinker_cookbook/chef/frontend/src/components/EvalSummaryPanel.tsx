@@ -1,16 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { scoreColor } from '../utils/shared';
 import type { EvalRunSummary, ScoresTableRow } from '../api/types';
 
 interface Props {
   runId: string;
-}
-
-function scoreColor(score: number): string {
-  if (score >= 0.8) return 'var(--success)';
-  if (score >= 0.5) return 'var(--warning)';
-  return 'var(--error)';
 }
 
 export function EvalSummaryPanel({ runId }: Props) {
@@ -115,9 +110,9 @@ export function EvalSummaryPanel({ runId }: Props) {
       <div className="card">
         <div className="card-header">
           <span className="card-title">Eval Runs</span>
-          <a href="#" onClick={(e) => { e.preventDefault(); navigate('/eval'); }} style={{ fontSize: '0.6875rem' }}>
-            View all
-          </a>
+          <span style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
+            {evalRuns.length} run{evalRuns.length !== 1 ? 's' : ''}
+          </span>
         </div>
         <table>
           <thead>

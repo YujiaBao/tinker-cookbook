@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { MetaField } from '../utils/shared';
 import type { EvalTrajectoryDetail } from '../api/types';
 
 export function EvalTrajectoryPage() {
@@ -93,11 +94,3 @@ export function EvalTrajectoryPage() {
   );
 }
 
-function MetaField({ label, value, color }: { label: string; value: string; color?: string }) {
-  return (
-    <div>
-      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '2px' }}>{label}</div>
-      <div className="mono" style={{ fontWeight: 600, color: color ?? 'var(--text-primary)' }}>{value}</div>
-    </div>
-  );
-}

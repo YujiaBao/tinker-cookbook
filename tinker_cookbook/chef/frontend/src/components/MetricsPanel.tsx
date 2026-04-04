@@ -131,10 +131,7 @@ export function MetricsPanel({ runId }: Props) {
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
 
-    const es = new EventSource(api.metricsStreamUrl(runId));
-    esRef.current = es;
-
-    es.onmessage = (event) => {
+    function handleMessage(event: MessageEvent) {
       try {
         const record = JSON.parse(event.data) as MetricRecord;
         setRecords((prev) => [...prev, record]);
@@ -145,24 +142,31 @@ export function MetricsPanel({ runId }: Props) {
           return added.length > 0 ? [...prev, ...added] : prev;
         });
       } catch { /* ignore keepalives */ }
-    };
+    }
 
-    // Reconnect on error
-    es.onerror = () => {
-      es.close();
-      setTimeout(() => {
+    function connect() {
+      const es = new EventSource(api.metricsStreamUrl(runId));
+      esRef.current = es;
+      es.onmessage = handleMessage;
+      es.onerror = () => {
+        es.close();
+        // Only reconnect if this is still the active connection
         if (esRef.current === es) {
-          const retry = new EventSource(api.metricsStreamUrl(runId));
-          esRef.current = retry;
-          retry.onmessage = es.onmessage;
-          retry.onerror = es.onerror;
+          esRef.current = null;
+          setTimeout(() => {
+            if (esRef.current === null) connect();
+          }, 5000);
         }
-      }, 5000);
-    };
+      };
+    }
+
+    connect();
 
     return () => {
-      es.close();
-      esRef.current = null;
+      if (esRef.current) {
+        esRef.current.close();
+        esRef.current = null;
+      }
     };
   }, [runId]);
 

@@ -2,13 +2,8 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { SortableTable } from '../components/SortableTable';
+import { scoreColor } from '../utils/shared';
 import type { EvalRunDetail, EvalTrajectorySummary } from '../api/types';
-
-function scoreColor(score: number): string {
-  if (score >= 0.8) return 'var(--success)';
-  if (score >= 0.5) return 'var(--warning)';
-  return 'var(--error)';
-}
 
 export function EvalRunDetailPage() {
   const { evalRunId } = useParams<{ evalRunId: string }>();

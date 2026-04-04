@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { StatusBadge, TypeBadge } from '../utils/shared';
 import type { CheckpointRecord, MetricRecord, RunInfo, ScoresTableRow } from '../api/types';
-
-const TYPE_LABELS: Record<string, string> = { rl: 'RL', sl: 'SFT', dpo: 'DPO' };
-const TYPE_COLORS: Record<string, string> = { rl: '#6366f1', sl: '#22c55e', dpo: '#f59e0b' };
 
 interface Props {
   runId: string;
@@ -94,19 +92,12 @@ export function RunOverviewPanel({ runId, run }: Props) {
           {run.training_type && (
             <div>
               <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)', marginBottom: '2px' }}>Type</div>
-              <span className="tag" style={{ background: `${TYPE_COLORS[run.training_type]}22`, color: TYPE_COLORS[run.training_type], fontSize: '0.75rem' }}>
-                {TYPE_LABELS[run.training_type]}
-              </span>
+              <TypeBadge type={run.training_type} />
             </div>
           )}
           <div>
             <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)', marginBottom: '2px' }}>Status</div>
-            <span className="badge" style={{
-              background: run.status === 'running' ? 'rgba(34,197,94,0.15)' : run.status === 'completed' ? 'rgba(99,102,241,0.15)' : 'rgba(100,116,139,0.15)',
-              color: run.status === 'running' ? 'var(--success)' : run.status === 'completed' ? '#818cf8' : 'var(--text-muted)',
-            }}>
-              {run.status}
-            </span>
+            <StatusBadge status={run.status} />
           </div>
           {run.config_summary?.model_name != null && (
             <div>
