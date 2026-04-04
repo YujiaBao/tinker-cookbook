@@ -112,6 +112,11 @@ class LocalStorage:
         return sorted(child.name for child in full.iterdir())
 
 
+def storage_join(*parts: str) -> str:
+    """Join storage path segments, handling empty prefixes correctly."""
+    return "/".join(p for p in parts if p)
+
+
 # ── JSON/JSONL helpers ────────────────────────────────────────────────
 
 

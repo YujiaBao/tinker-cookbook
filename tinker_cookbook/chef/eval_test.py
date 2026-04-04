@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from tinker_cookbook.chef.data.eval_reader import EvalReader
+from tinker_cookbook.storage import LocalStorage
 
 
 @pytest.fixture
@@ -104,54 +105,54 @@ def eval_store(tmp_path: Path) -> Path:
 
 class TestEvalReader:
     def test_list_eval_runs(self, eval_store: Path) -> None:
-        reader = EvalReader(eval_store)
+        reader = EvalReader(LocalStorage(eval_store), "")
         runs = reader.list_eval_runs()
         assert len(runs) == 2
         assert runs[0]["run_id"] == "eval_001"
         assert runs[1]["run_id"] == "eval_002"
 
     def test_get_eval_run_metadata(self, eval_store: Path) -> None:
-        reader = EvalReader(eval_store)
+        reader = EvalReader(LocalStorage(eval_store), "")
         meta = reader.get_eval_run_metadata("eval_001")
         assert meta is not None
         assert meta["model_name"] == "Llama-3.1-8B"
         assert meta["scores"]["gsm8k"] == 0.85
 
     def test_list_benchmarks(self, eval_store: Path) -> None:
-        reader = EvalReader(eval_store)
+        reader = EvalReader(LocalStorage(eval_store), "")
         benchmarks = reader.list_benchmarks("eval_001")
         assert "gsm8k" in benchmarks
         assert "ifeval" in benchmarks
 
     def test_get_benchmark_result(self, eval_store: Path) -> None:
-        reader = EvalReader(eval_store)
+        reader = EvalReader(LocalStorage(eval_store), "")
         result = reader.get_benchmark_result("eval_001", "gsm8k")
         assert result is not None
         assert result["score"] == 0.85
         assert result["num_correct"] == 85
 
     def test_get_benchmark_trajectories(self, eval_store: Path) -> None:
-        reader = EvalReader(eval_store)
+        reader = EvalReader(LocalStorage(eval_store), "")
         trajs = reader.get_benchmark_trajectories("eval_001", "gsm8k")
         assert len(trajs) == 3
         assert trajs[0]["reward"] == 1.0
         assert len(trajs[0]["turns"]) == 2
 
     def test_get_single_trajectory(self, eval_store: Path) -> None:
-        reader = EvalReader(eval_store)
+        reader = EvalReader(LocalStorage(eval_store), "")
         traj = reader.get_single_trajectory("eval_001", "gsm8k", 1)
         assert traj is not None
         assert traj["example_id"] == "def456"
 
     def test_get_scores_table(self, eval_store: Path) -> None:
-        reader = EvalReader(eval_store)
+        reader = EvalReader(LocalStorage(eval_store), "")
         table = reader.get_scores_table()
         assert len(table) == 2
         assert table[0]["scores"]["gsm8k"] == 0.85
         assert table[1]["scores"]["gsm8k"] == 0.92
 
     def test_nonexistent(self, eval_store: Path) -> None:
-        reader = EvalReader(eval_store)
+        reader = EvalReader(LocalStorage(eval_store), "")
         assert reader.get_eval_run_metadata("nonexistent") is None
         assert reader.get_benchmark_result("eval_001", "nonexistent") is None
         assert reader.get_benchmark_trajectories("eval_001", "nonexistent") == []

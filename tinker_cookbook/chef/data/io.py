@@ -1,55 +1,38 @@
-"""Shared I/O utilities for Tinker Chef data readers."""
+"""Shared I/O utilities for Tinker Chef data readers.
+
+All file access goes through a ``Storage`` instance so the dashboard
+can serve data from local disk, S3, or any other backend.
+"""
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
+
+from tinker_cookbook.storage import Storage, storage_read_json, storage_read_jsonl
 
 logger = logging.getLogger(__name__)
 
-
-def read_json(path: Path) -> dict[str, Any] | None:
-    """Read a JSON file, returning None if missing or malformed."""
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return None
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Failed to read JSON %s: %s", path, e)
-        return None
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """Read a JSONL file, returning an empty list if missing or malformed."""
-    records: list[dict[str, Any]] = []
-    try:
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    records.append(json.loads(line))
-    except FileNotFoundError:
-        return []
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Failed to read JSONL %s: %s", path, e)
-    return records
+# Re-export for backward compat with readers that import from here
+read_json_from_storage = storage_read_json
+read_jsonl_from_storage = storage_read_jsonl
 
 
 class IncrementalJsonlReader:
-    """Base class for incremental JSONL file reading with byte-offset tracking.
+    """Base class for incremental JSONL file reading with offset tracking.
 
-    Reads only new bytes since the last call to :meth:`read`, making it
-    efficient for files that are appended to during training.
+    Uses ``Storage.stat()`` to check for new data and ``Storage.read()``
+    to fetch the full file contents. Tracks how many bytes have been
+    parsed so only new lines are processed on each call.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, storage: Storage, path: str) -> None:
+        self._storage = storage
         self._path = path
         self._offset: int = 0
         self._records: list[dict[str, Any]] = []
 
     @property
-    def path(self) -> Path:
+    def path(self) -> str:
         return self._path
 
     @property
@@ -58,29 +41,29 @@ class IncrementalJsonlReader:
 
     def read(self) -> list[dict[str, Any]]:
         """Read new lines since last call. Returns only new records."""
+        stat = self._storage.stat(self._path)
+        if stat is None or stat.size <= self._offset:
+            return []
+
         try:
-            size = self._path.stat().st_size
+            raw_bytes = self._storage.read(self._path)
         except FileNotFoundError:
             return []
 
-        if size <= self._offset:
-            return []
+        # Skip already-parsed bytes
+        new_bytes = raw_bytes[self._offset:]
 
-        new_records: list[dict[str, Any]] = []
-        with open(self._path, "rb") as f:
-            f.seek(self._offset)
-            raw_bytes = f.read()
-
-        # Only process complete lines (ignore trailing partial write)
-        if not raw_bytes.endswith(b"\n"):
-            last_newline = raw_bytes.rfind(b"\n")
+        # Only process complete lines
+        if not new_bytes.endswith(b"\n"):
+            last_newline = new_bytes.rfind(b"\n")
             if last_newline == -1:
                 return []
-            raw_bytes = raw_bytes[: last_newline + 1]
+            new_bytes = new_bytes[: last_newline + 1]
 
-        self._offset += len(raw_bytes)
-        raw = raw_bytes.decode("utf-8", errors="replace")
+        self._offset += len(new_bytes)
+        raw = new_bytes.decode("utf-8", errors="replace")
 
+        new_records: list[dict[str, Any]] = []
         for line in raw.splitlines():
             line = line.strip()
             if not line:
@@ -97,7 +80,5 @@ class IncrementalJsonlReader:
     def has_data(self) -> bool:
         if self._records:
             return True
-        try:
-            return self._path.stat().st_size > 0
-        except FileNotFoundError:
-            return False
+        stat = self._storage.stat(self._path)
+        return stat is not None and stat.size > 0

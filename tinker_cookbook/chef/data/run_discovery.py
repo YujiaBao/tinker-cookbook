@@ -1,24 +1,20 @@
 """Discover training runs by scanning directories for metrics.jsonl files."""
 
-import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Literal
 
-from tinker_cookbook.chef.data.io import read_json, read_jsonl
-
-Status = Literal["running", "completed", "idle"]
-TrainingType = Literal["rl", "sl", "dpo"]
+from tinker_cookbook.storage import Storage, storage_join, storage_read_json, storage_read_jsonl
 
 logger = logging.getLogger(__name__)
 
 _ITERATION_DIR_RE = re.compile(r"^iteration_(\d+)$")
-
-# A run is considered "running" if its metrics file was updated within this window
 _ACTIVE_THRESHOLD_SECONDS = 120
+
+Status = Literal["running", "completed", "idle"]
+TrainingType = Literal["rl", "sl", "dpo"]
 
 
 @dataclass(frozen=True)
@@ -26,7 +22,7 @@ class RunInfo:
     """Metadata about a discovered training run."""
 
     run_id: str
-    path: Path
+    prefix: str  # storage-relative path to the run directory
     has_config: bool
     has_metrics: bool
     has_checkpoints: bool
@@ -42,55 +38,50 @@ class IterationInfo:
     """Metadata about a single training iteration directory."""
 
     iteration: int
-    path: Path
     has_train_rollouts: bool = False
     has_train_logtree: bool = False
     eval_labels: list[str] = field(default_factory=list)
 
 
-def discover_runs(root: Path) -> list[RunInfo]:
-    """Scan *root* for directories containing metrics.jsonl or config.json."""
-    if not root.is_dir():
-        return []
-
+def discover_runs(storage: Storage, root_prefix: str = "") -> list[RunInfo]:
+    """Scan storage for directories containing metrics.jsonl or config.json."""
     runs: list[RunInfo] = []
 
-    if _is_run_dir(root):
-        runs.append(_build_run_info(root.name, root))
+    # Check if root itself is a run
+    if _is_run_dir(storage, root_prefix):
+        name = root_prefix.rstrip("/").rsplit("/", 1)[-1] if root_prefix else "root"
+        runs.append(_build_run_info(storage, name, root_prefix))
         return runs
 
-    for child in sorted(root.iterdir()):
-        if child.is_dir() and _is_run_dir(child):
-            runs.append(_build_run_info(child.name, child))
+    # Scan immediate subdirectories
+    for child in sorted(storage.list_dir(root_prefix)):
+        child_prefix = storage_join(root_prefix, child) if root_prefix else child
+        if _is_run_dir(storage, child_prefix):
+            runs.append(_build_run_info(storage, child, child_prefix))
 
     return runs
 
 
-def list_iterations(run_path: Path) -> list[IterationInfo]:
+def list_iterations(storage: Storage, run_prefix: str) -> list[IterationInfo]:
     """List iteration directories within a run, sorted by iteration number."""
     iterations: list[IterationInfo] = []
 
-    if not run_path.is_dir():
-        return iterations
-
-    for child in run_path.iterdir():
-        if not child.is_dir():
-            continue
-        match = _ITERATION_DIR_RE.match(child.name)
+    for child in storage.list_dir(run_prefix):
+        match = _ITERATION_DIR_RE.match(child)
         if not match:
             continue
 
         iteration_num = int(match.group(1))
-        info = IterationInfo(iteration=iteration_num, path=child)
+        info = IterationInfo(iteration=iteration_num)
+        iter_prefix = storage_join(run_prefix, child)
 
-        for f in child.iterdir():
-            name = f.name
-            if name == "train_rollout_summaries.jsonl":
+        for f in storage.list_dir(iter_prefix):
+            if f == "train_rollout_summaries.jsonl":
                 info.has_train_rollouts = True
-            elif name == "train_logtree.json":
+            elif f == "train_logtree.json":
                 info.has_train_logtree = True
-            elif name.startswith("eval_") and name.endswith("_rollout_summaries.jsonl"):
-                label = name[len("eval_") : -len("_rollout_summaries.jsonl")]
+            elif f.startswith("eval_") and f.endswith("_rollout_summaries.jsonl"):
+                label = f[len("eval_") : -len("_rollout_summaries.jsonl")]
                 info.eval_labels.append(label)
 
         iterations.append(info)
@@ -99,82 +90,68 @@ def list_iterations(run_path: Path) -> list[IterationInfo]:
     return iterations
 
 
-def _is_run_dir(path: Path) -> bool:
-    return (path / "metrics.jsonl").exists() or (path / "config.json").exists()
+def _is_run_dir(storage: Storage, prefix: str) -> bool:
+    metrics_path = storage_join(prefix, "metrics.jsonl")
+    config_path = storage_join(prefix, "config.json")
+    return storage.exists(metrics_path) or storage.exists(config_path)
 
 
-def _detect_status(path: Path) -> tuple[str, float | None]:
-    """Detect run status from file system state."""
-    metrics_path = path / "metrics.jsonl"
-    last_updated: float | None = None
-
-    try:
-        last_updated = metrics_path.stat().st_mtime
-    except FileNotFoundError:
+def _detect_status(storage: Storage, prefix: str) -> tuple[Status, float | None]:
+    metrics_path = storage_join(prefix, "metrics.jsonl")
+    stat = storage.stat(metrics_path)
+    if stat is None:
         return "idle", None
 
-    # Check if metrics file was recently updated
-    age = time.time() - last_updated
+    age = time.time() - stat.mtime
     if age < _ACTIVE_THRESHOLD_SECONDS:
-        return "running", last_updated
+        return "running", stat.mtime
 
-    # Check for final checkpoint
-    checkpoints = read_jsonl(path / "checkpoints.jsonl")
-    for ckpt in reversed(checkpoints):
+    ckpt_path = storage_join(prefix, "checkpoints.jsonl")
+    for ckpt in reversed(storage_read_jsonl(storage, ckpt_path)):
         if ckpt.get("final"):
-            return "completed", last_updated
+            return "completed", stat.mtime
 
-    # Old metrics but no final checkpoint — might have been interrupted
-    return "idle", last_updated
+    return "idle", stat.mtime
 
 
-def _infer_training_type(path: Path) -> str | None:
-    """Infer training type (rl/sl/dpo) from config.json fields."""
-    config = read_json(path / "config.json")
+def _infer_training_type(storage: Storage, prefix: str) -> TrainingType | None:
+    config_path = storage_join(prefix, "config.json")
+    config = storage_read_json(storage, config_path)
     if config is None:
         return None
 
-    # DPO has dpo_beta
     if "dpo_beta" in config:
         return "dpo"
-
-    # RL has loss_fn (importance_sampling, etc.) and no num_epochs
     if "loss_fn" in config:
         return "rl"
-
-    # SL has num_epochs
     if "num_epochs" in config:
         return "sl"
 
-    # Check for nested config patterns
-    if "dataset_builder" in config:
-        db = config["dataset_builder"]
-        if isinstance(db, dict):
-            db_type = db.get("__type__", "")
-            if "RL" in db_type:
-                return "rl"
-            if "Supervised" in db_type or "SL" in db_type:
-                return "sl"
+    dataset_builder = config.get("dataset_builder")
+    if isinstance(dataset_builder, dict):
+        db_type = dataset_builder.get("__type__", "")
+        if "RL" in db_type:
+            return "rl"
+        if "Supervised" in db_type or "SL" in db_type:
+            return "sl"
 
     return None
 
 
-def _build_run_info(run_id: str, path: Path) -> RunInfo:
-    """Build RunInfo by checking which files exist."""
+def _build_run_info(storage: Storage, run_id: str, prefix: str) -> RunInfo:
     iteration_count = sum(
-        1 for child in path.iterdir() if child.is_dir() and _ITERATION_DIR_RE.match(child.name)
+        1 for child in storage.list_dir(prefix) if _ITERATION_DIR_RE.match(child)
     )
-
-    status, last_updated = _detect_status(path)
-    training_type = _infer_training_type(path)
+    status, last_updated = _detect_status(storage, prefix)
+    training_type = _infer_training_type(storage, prefix)
 
     return RunInfo(
         run_id=run_id,
-        path=path,
-        has_config=(path / "config.json").exists(),
-        has_metrics=(path / "metrics.jsonl").exists(),
-        has_checkpoints=(path / "checkpoints.jsonl").exists(),
-        has_timing=(path / "timing_spans.jsonl").exists(),
+        prefix=prefix,
+        has_config=storage.exists(storage_join(prefix, "config.json")),
+        has_metrics=storage.exists(storage_join(prefix, "metrics.jsonl")),
+        has_checkpoints=storage.exists(storage_join(prefix, "checkpoints.jsonl")),
+        has_timing=storage.exists(storage_join(prefix, "timing_spans.jsonl")),
         iteration_count=iteration_count,
         status=status,
         last_updated=last_updated,

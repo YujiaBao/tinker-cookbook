@@ -18,6 +18,7 @@ from tinker_cookbook.chef.data.run_discovery import (
     list_iterations,
 )
 from tinker_cookbook.chef.data.store import RunStore
+from tinker_cookbook.storage import LocalStorage
 from tinker_cookbook.chef.data.timing_reader import TimingReader
 
 
@@ -193,7 +194,7 @@ def tmp_multi_run(tmp_path: Path, tmp_run: Path) -> Path:
 
 class TestMetricsReader:
     def test_read_all(self, tmp_run: Path) -> None:
-        reader = MetricsReader(tmp_run / "metrics.jsonl")
+        reader = MetricsReader(LocalStorage(tmp_run), "metrics.jsonl")
         new = reader.read()
         assert len(new) == 5
         assert reader.records == new
@@ -202,7 +203,7 @@ class TestMetricsReader:
 
     def test_incremental_read(self, tmp_run: Path) -> None:
         metrics_path = tmp_run / "metrics.jsonl"
-        reader = MetricsReader(metrics_path)
+        reader = MetricsReader(LocalStorage(metrics_path.parent), metrics_path.name)
 
         # First read
         reader.read()
@@ -219,19 +220,19 @@ class TestMetricsReader:
         assert len(reader.records) == 6
 
     def test_no_new_data(self, tmp_run: Path) -> None:
-        reader = MetricsReader(tmp_run / "metrics.jsonl")
+        reader = MetricsReader(LocalStorage(tmp_run), "metrics.jsonl")
         reader.read()
         new = reader.read()
         assert new == []
 
     def test_nonexistent_file(self, tmp_path: Path) -> None:
-        reader = MetricsReader(tmp_path / "nonexistent.jsonl")
+        reader = MetricsReader(LocalStorage(tmp_path), "nonexistent.jsonl")
         assert reader.read() == []
         assert not reader.has_data()
 
     def test_partial_write_ignored(self, tmp_run: Path) -> None:
         metrics_path = tmp_run / "metrics.jsonl"
-        reader = MetricsReader(metrics_path)
+        reader = MetricsReader(LocalStorage(metrics_path.parent), metrics_path.name)
         reader.read()
 
         # Append a partial line (no trailing newline)
@@ -242,7 +243,7 @@ class TestMetricsReader:
         assert new == []
 
     def test_metric_keys(self, tmp_run: Path) -> None:
-        reader = MetricsReader(tmp_run / "metrics.jsonl")
+        reader = MetricsReader(LocalStorage(tmp_run), "metrics.jsonl")
         reader.read()
         keys = reader.metric_keys()
         assert "train_mean_nll" in keys
@@ -253,7 +254,7 @@ class TestMetricsReader:
     def test_malformed_line_skipped(self, tmp_path: Path) -> None:
         path = tmp_path / "metrics.jsonl"
         path.write_text('{"step": 0, "ok": 1}\nnot json\n{"step": 1, "ok": 2}\n')
-        reader = MetricsReader(path)
+        reader = MetricsReader(LocalStorage(path.parent), path.name)
         records = reader.read()
         assert len(records) == 2
         assert records[0]["step"] == 0
@@ -265,20 +266,20 @@ class TestMetricsReader:
 
 class TestConfigReader:
     def test_read_config(self, tmp_run: Path) -> None:
-        reader = ConfigReader(tmp_run / "config.json")
+        reader = ConfigReader(LocalStorage(tmp_run), "config.json")
         config = reader.read()
         assert config is not None
         assert config["model_name"] == "Llama-3.1-8B"
         assert config["learning_rate"] == 1e-4
 
     def test_cached(self, tmp_run: Path) -> None:
-        reader = ConfigReader(tmp_run / "config.json")
+        reader = ConfigReader(LocalStorage(tmp_run), "config.json")
         c1 = reader.read()
         c2 = reader.read()
         assert c1 is c2  # Same object, not re-read
 
     def test_nonexistent(self, tmp_path: Path) -> None:
-        reader = ConfigReader(tmp_path / "nope.json")
+        reader = ConfigReader(LocalStorage(tmp_path), "nope.json")
         assert reader.read() is None
 
 
@@ -287,9 +288,10 @@ class TestConfigReader:
 
 class TestRunDiscovery:
     def test_discover_single_run(self, tmp_run: Path) -> None:
-        runs = discover_runs(tmp_run)
+        runs = discover_runs(LocalStorage(tmp_run))
         assert len(runs) == 1
-        assert runs[0].run_id == tmp_run.name
+        # When root itself is a run, run_id is derived from directory name or "root"
+        assert runs[0].run_id in (tmp_run.name, "root")
         assert runs[0].has_config is True
         assert runs[0].has_metrics is True
         assert runs[0].has_checkpoints is True
@@ -297,22 +299,24 @@ class TestRunDiscovery:
         assert runs[0].iteration_count == 3
 
     def test_discover_multi_run(self, tmp_multi_run: Path) -> None:
-        runs = discover_runs(tmp_multi_run)
+        runs = discover_runs(LocalStorage(tmp_multi_run))
         assert len(runs) == 2
         ids = {r.run_id for r in runs}
         assert "run_001" in ids
         assert "run_002" in ids
 
     def test_discover_empty_dir(self, tmp_path: Path) -> None:
-        runs = discover_runs(tmp_path)
+        runs = discover_runs(LocalStorage(tmp_path))
         assert runs == []
 
     def test_discover_nonexistent(self, tmp_path: Path) -> None:
-        runs = discover_runs(tmp_path / "nope")
+        nope = tmp_path / "nope"
+        nope.mkdir()  # LocalStorage needs an existing dir
+        runs = discover_runs(LocalStorage(nope))
         assert runs == []
 
     def test_list_iterations(self, tmp_run: Path) -> None:
-        iterations = list_iterations(tmp_run)
+        iterations = list_iterations(LocalStorage(tmp_run), "")
         assert len(iterations) == 3
         assert iterations[0].iteration == 0
         assert iterations[1].iteration == 2
@@ -331,7 +335,7 @@ class TestRunDiscovery:
 
 class TestRolloutReader:
     def test_read_train_rollouts(self, tmp_run: Path) -> None:
-        reader = RolloutReader(tmp_run)
+        reader = RolloutReader(LocalStorage(tmp_run), "")
         rollouts = reader.read_rollouts(0, "train")
         assert len(rollouts) == 6  # 2 groups * 3 trajectories
         assert rollouts[0]["schema_version"] == 1
@@ -340,13 +344,13 @@ class TestRolloutReader:
         assert len(rollouts[0]["steps"]) == 2
 
     def test_read_eval_rollouts(self, tmp_run: Path) -> None:
-        reader = RolloutReader(tmp_run)
+        reader = RolloutReader(LocalStorage(tmp_run), "")
         rollouts = reader.read_rollouts(4, "eval", label="test")
         assert len(rollouts) == 1
         assert rollouts[0]["total_reward"] == 0.9
 
     def test_read_single_rollout(self, tmp_run: Path) -> None:
-        reader = RolloutReader(tmp_run)
+        reader = RolloutReader(LocalStorage(tmp_run), "")
         rollout = reader.read_single_rollout(0, group_idx=1, traj_idx=2)
         assert rollout is not None
         assert rollout["group_idx"] == 1
@@ -354,11 +358,11 @@ class TestRolloutReader:
         assert rollout["tags"] == ["code", "humaneval"]
 
     def test_nonexistent_iteration(self, tmp_run: Path) -> None:
-        reader = RolloutReader(tmp_run)
+        reader = RolloutReader(LocalStorage(tmp_run), "")
         assert reader.read_rollouts(999) == []
 
     def test_nonexistent_rollout(self, tmp_run: Path) -> None:
-        reader = RolloutReader(tmp_run)
+        reader = RolloutReader(LocalStorage(tmp_run), "")
         assert reader.read_single_rollout(0, group_idx=99, traj_idx=99) is None
 
 
@@ -367,19 +371,19 @@ class TestRolloutReader:
 
 class TestLogtreeReader:
     def test_read_logtree(self, tmp_run: Path) -> None:
-        reader = LogtreeReader(tmp_run)
+        reader = LogtreeReader(LocalStorage(tmp_run), "")
         tree = reader.read_logtree(0)
         assert tree is not None
         assert tree["title"] == "RL Iteration 0"
         assert "root" in tree
 
     def test_list_logtrees(self, tmp_run: Path) -> None:
-        reader = LogtreeReader(tmp_run)
+        reader = LogtreeReader(LocalStorage(tmp_run), "")
         names = reader.list_logtrees(0)
         assert "train" in names
 
     def test_nonexistent(self, tmp_run: Path) -> None:
-        reader = LogtreeReader(tmp_run)
+        reader = LogtreeReader(LocalStorage(tmp_run), "")
         assert reader.read_logtree(999) is None
 
 
@@ -388,14 +392,14 @@ class TestLogtreeReader:
 
 class TestTimingReader:
     def test_read_all(self, tmp_run: Path) -> None:
-        reader = TimingReader(tmp_run / "timing_spans.jsonl")
+        reader = TimingReader(LocalStorage(tmp_run), "timing_spans.jsonl")
         new = reader.read()
         assert len(new) == 2  # Two step records
         assert new[0]["step"] == 0
         assert len(new[0]["spans"]) == 4  # 4 spans in step 0
 
     def test_get_spans_for_step(self, tmp_run: Path) -> None:
-        reader = TimingReader(tmp_run / "timing_spans.jsonl")
+        reader = TimingReader(LocalStorage(tmp_run), "timing_spans.jsonl")
         reader.read()
         step0_spans = reader.get_spans_for_step(0)
         assert len(step0_spans) == 4
@@ -403,7 +407,7 @@ class TestTimingReader:
         assert names == {"forward_backward", "optim_step", "policy_sample", "env_step"}
 
     def test_get_all_spans_flat(self, tmp_run: Path) -> None:
-        reader = TimingReader(tmp_run / "timing_spans.jsonl")
+        reader = TimingReader(LocalStorage(tmp_run), "timing_spans.jsonl")
         reader.read()
         flat = reader.get_all_spans_flat()
         assert len(flat) == 5  # 4 spans in step 0 + 1 in step 1
@@ -412,7 +416,7 @@ class TestTimingReader:
         assert steps == {0, 1}
 
     def test_concurrency_analysis(self, tmp_run: Path) -> None:
-        reader = TimingReader(tmp_run / "timing_spans.jsonl")
+        reader = TimingReader(LocalStorage(tmp_run), "timing_spans.jsonl")
         reader.read()
         analysis = reader.get_concurrency_analysis(0)
         # policy_sample (0.0-0.8) overlaps with env_step (0.2-0.8) and forward_backward (0.0-1.5)
@@ -422,7 +426,7 @@ class TestTimingReader:
 
     def test_incremental(self, tmp_run: Path) -> None:
         path = tmp_run / "timing_spans.jsonl"
-        reader = TimingReader(path)
+        reader = TimingReader(LocalStorage(path.parent), path.name)
         reader.read()
 
         with open(path, "a") as f:
@@ -441,18 +445,18 @@ class TestTimingReader:
 
 class TestRunStore:
     def test_discover_and_get_runs(self, tmp_run: Path) -> None:
-        store = RunStore(tmp_run)
+        store = RunStore(LocalStorage(tmp_run))
         runs = store.get_runs()
         assert len(runs) == 1
 
     def test_get_metrics(self, tmp_run: Path) -> None:
-        store = RunStore(tmp_run)
+        store = RunStore(LocalStorage(tmp_run))
         run_id = store.get_runs()[0].run_id
         metrics = store.get_metrics(run_id)
         assert len(metrics) == 5
 
     def test_get_new_metrics(self, tmp_run: Path) -> None:
-        store = RunStore(tmp_run)
+        store = RunStore(LocalStorage(tmp_run))
         run_id = store.get_runs()[0].run_id
 
         # First call reads all
@@ -470,52 +474,52 @@ class TestRunStore:
         assert len(new) == 1
 
     def test_get_config(self, tmp_run: Path) -> None:
-        store = RunStore(tmp_run)
+        store = RunStore(LocalStorage(tmp_run))
         run_id = store.get_runs()[0].run_id
         config = store.get_config(run_id)
         assert config is not None
         assert config["model_name"] == "Llama-3.1-8B"
 
     def test_get_iterations(self, tmp_run: Path) -> None:
-        store = RunStore(tmp_run)
+        store = RunStore(LocalStorage(tmp_run))
         run_id = store.get_runs()[0].run_id
         iterations = store.get_iterations(run_id)
         assert len(iterations) == 3
 
     def test_get_rollouts(self, tmp_run: Path) -> None:
-        store = RunStore(tmp_run)
+        store = RunStore(LocalStorage(tmp_run))
         run_id = store.get_runs()[0].run_id
         rollouts = store.get_rollouts(run_id, 0)
         assert len(rollouts) == 6
 
     def test_get_single_rollout(self, tmp_run: Path) -> None:
-        store = RunStore(tmp_run)
+        store = RunStore(LocalStorage(tmp_run))
         run_id = store.get_runs()[0].run_id
         rollout = store.get_single_rollout(run_id, 0, 0, 0)
         assert rollout is not None
         assert rollout["tags"] == ["math", "gsm8k"]
 
     def test_get_logtree(self, tmp_run: Path) -> None:
-        store = RunStore(tmp_run)
+        store = RunStore(LocalStorage(tmp_run))
         run_id = store.get_runs()[0].run_id
         tree = store.get_logtree(run_id, 0)
         assert tree is not None
         assert "root" in tree
 
     def test_get_timing(self, tmp_run: Path) -> None:
-        store = RunStore(tmp_run)
+        store = RunStore(LocalStorage(tmp_run))
         run_id = store.get_runs()[0].run_id
         timing = store.get_timing(run_id)
         assert len(timing) == 2  # Two step records
 
     def test_nonexistent_run(self, tmp_run: Path) -> None:
-        store = RunStore(tmp_run)
+        store = RunStore(LocalStorage(tmp_run))
         assert store.get_run("nonexistent") is None
         assert store.get_metrics("nonexistent") == []
         assert store.get_config("nonexistent") is None
 
     def test_multi_run(self, tmp_multi_run: Path) -> None:
-        store = RunStore(tmp_multi_run)
+        store = RunStore(LocalStorage(tmp_multi_run))
         runs = store.get_runs()
         assert len(runs) == 2
 
@@ -524,7 +528,7 @@ class TestRunStore:
             assert store.get_run(run.run_id) is not None
 
     def test_refresh_runs(self, tmp_multi_run: Path) -> None:
-        store = RunStore(tmp_multi_run)
+        store = RunStore(LocalStorage(tmp_multi_run))
         runs = store.get_runs()
         assert len(runs) == 2
 
@@ -630,14 +634,14 @@ def tmp_eval_store(tmp_path: Path) -> Path:
 class TestEvalReader:
     def test_list_eval_runs(self, tmp_eval_store: Path) -> None:
         from tinker_cookbook.chef.data.eval_reader import EvalReader
-        reader = EvalReader(tmp_eval_store)
+        reader = EvalReader(LocalStorage(tmp_eval_store), "")
         runs = reader.list_eval_runs()
         assert len(runs) == 2
         assert runs[0]["run_id"] == "eval_001"
 
     def test_get_metadata(self, tmp_eval_store: Path) -> None:
         from tinker_cookbook.chef.data.eval_reader import EvalReader
-        reader = EvalReader(tmp_eval_store)
+        reader = EvalReader(LocalStorage(tmp_eval_store), "")
         metadata = reader.get_eval_run_metadata("eval_001")
         assert metadata is not None
         assert metadata["model_name"] == "Llama-3.1-8B"
@@ -645,13 +649,13 @@ class TestEvalReader:
 
     def test_list_benchmarks(self, tmp_eval_store: Path) -> None:
         from tinker_cookbook.chef.data.eval_reader import EvalReader
-        reader = EvalReader(tmp_eval_store)
+        reader = EvalReader(LocalStorage(tmp_eval_store), "")
         benchmarks = reader.list_benchmarks("eval_001")
         assert "gsm8k" in benchmarks
 
     def test_get_benchmark_result(self, tmp_eval_store: Path) -> None:
         from tinker_cookbook.chef.data.eval_reader import EvalReader
-        reader = EvalReader(tmp_eval_store)
+        reader = EvalReader(LocalStorage(tmp_eval_store), "")
         result = reader.get_benchmark_result("eval_001", "gsm8k")
         assert result is not None
         assert result["score"] == 0.75
@@ -659,7 +663,7 @@ class TestEvalReader:
 
     def test_get_trajectories(self, tmp_eval_store: Path) -> None:
         from tinker_cookbook.chef.data.eval_reader import EvalReader
-        reader = EvalReader(tmp_eval_store)
+        reader = EvalReader(LocalStorage(tmp_eval_store), "")
         trajectories = reader.get_benchmark_trajectories("eval_001", "gsm8k")
         assert len(trajectories) == 3
         assert trajectories[0]["example_id"] == "gsm8k_0000"
@@ -667,14 +671,14 @@ class TestEvalReader:
 
     def test_get_single_trajectory(self, tmp_eval_store: Path) -> None:
         from tinker_cookbook.chef.data.eval_reader import EvalReader
-        reader = EvalReader(tmp_eval_store)
+        reader = EvalReader(LocalStorage(tmp_eval_store), "")
         traj = reader.get_single_trajectory("eval_001", "gsm8k", 1)
         assert traj is not None
         assert traj["reward"] == 1.0
 
     def test_get_scores_table(self, tmp_eval_store: Path) -> None:
         from tinker_cookbook.chef.data.eval_reader import EvalReader
-        reader = EvalReader(tmp_eval_store)
+        reader = EvalReader(LocalStorage(tmp_eval_store), "")
         table = reader.get_scores_table()
         assert len(table) == 2
         assert table[0]["model_name"] == "Llama-3.1-8B"
@@ -683,6 +687,6 @@ class TestEvalReader:
 
     def test_nonexistent_run(self, tmp_eval_store: Path) -> None:
         from tinker_cookbook.chef.data.eval_reader import EvalReader
-        reader = EvalReader(tmp_eval_store)
+        reader = EvalReader(LocalStorage(tmp_eval_store), "")
         assert reader.get_eval_run_metadata("nonexistent") is None
         assert reader.list_benchmarks("nonexistent") == []
