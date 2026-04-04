@@ -11,7 +11,7 @@ from tinker_cookbook.recipes.math_rl import (
     arithmetic_env,
     math_env,
 )
-from tinker_cookbook.rl.train import AsyncConfig, Config, StreamMinibatchConfig, main
+from tinker_cookbook.rl.train import AsyncConfig, Config, RetryQueueConfig, StreamMinibatchConfig, main
 from tinker_cookbook.rl.types import RLDatasetBuilder
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,10 @@ class CLIConfig:
     loss_fn_config: dict[str, Any] | None = None
 
     max_steps: int | None = None
+
+    # Retry queue for failed rollouts
+    retry_queue_max_age_steps: int | None = None  # None = disabled
+    retry_queue_max_attempts: int = 3
 
 
 def get_dataset_builder(
@@ -167,6 +171,10 @@ async def cli_main(cli_config: CLIConfig):
         loss_fn=cli_config.loss_fn,
         loss_fn_config=cli_config.loss_fn_config,
         max_steps=cli_config.max_steps,
+        retry_queue_config=RetryQueueConfig(
+            max_age_steps=cli_config.retry_queue_max_age_steps,
+            max_attempts=cli_config.retry_queue_max_attempts,
+        ) if cli_config.retry_queue_max_age_steps is not None else None,
     )
 
     cli_utils.check_log_dir(log_path, behavior_if_exists=cli_config.behavior_if_log_dir_exists)
