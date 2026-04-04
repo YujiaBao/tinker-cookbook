@@ -426,16 +426,33 @@ class DynamicSamplingConfig:
     over-samples prompts and filters out low-variance groups after rollouts,
     keeping only groups with diverse rewards that drive learning.
 
+    .. note:: Design difference from SLIME/DAPO reference
+
+        SLIME implements a streaming replenishment loop that keeps fetching new
+        prompts until the target batch size is met, guaranteeing a constant
+        post-filter batch size. Our implementation uses **fixed upfront
+        oversampling**: we pull extra groups before rollouts, filter after, and
+        proceed with whatever remains. This means the effective batch size may
+        be smaller than the nominal batch size when filter rates are high (e.g.,
+        early in training when the model gets everything wrong). The
+        ``max_filter_ratio`` cap limits how much the batch can shrink (with the
+        default 0.5, the batch is at least 50% of the oversampled total). A
+        streaming approach would require deeper integration with the async
+        rollout pipeline and is left for future work.
+
     Args:
-        oversample_ratio (float): Factor by which to over-sample prompts
-            relative to the batch size. E.g. 1.5 means sample 50% more groups
-            than the nominal batch size. Must be >= 1.0.
-        min_reward_std (float): Minimum reward standard deviation to keep a
-            group. Groups with std <= this value are candidates for filtering.
-            Use 0.0 to filter only groups with exactly identical rewards.
-        max_filter_ratio (float): Maximum fraction of groups that may be
-            filtered in a single iteration. Must be in [0, 1). E.g. 0.5 means
-            at most half the groups can be removed.
+        oversample_ratio: Factor by which to over-sample prompts relative to
+            the batch size. E.g. 1.5 means sample 50% more groups than the
+            nominal batch size. Must be >= 1.0.
+        min_reward_std: Minimum reward standard deviation to keep a group.
+            Groups with std <= this value are candidates for filtering. Use 0.0
+            to filter only groups with exactly identical rewards. SLIME uses a
+            threshold of 1e-6, which is functionally equivalent for discrete
+            rewards.
+        max_filter_ratio: Maximum fraction of groups that may be filtered in a
+            single iteration. Must be in [0, 1). E.g. 0.5 means at most half
+            the groups can be removed. This cap exists because our fixed
+            oversampling cannot replenish filtered groups mid-iteration.
     """
 
     oversample_ratio: float = chz.field(default=1.5, munger=lambda _, v: _validate_oversample_ratio(v))
