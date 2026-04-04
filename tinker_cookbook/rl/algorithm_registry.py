@@ -252,11 +252,20 @@ def grpo_advantage(
     trajectory_groups_P: list[TrajectoryGroup],
     **kwargs: Any,
 ) -> list[torch.Tensor]:
-    """GRPO advantage: center rewards within each group.
+    """GRPO advantage: mean-centered rewards within each group (no variance normalization).
 
     For each trajectory group, the advantage of trajectory *i* is
-    ``reward_i - mean(rewards)``.  This is the standard advantage estimator
-    used by Group Relative Policy Optimization (GRPO).
+    ``reward_i - mean(rewards)``.  This subtracts the per-group mean but does
+    **not** divide by the standard deviation, which is equivalent to what
+    VERL calls "Dr.GRPO" (``norm_adv_by_std_in_grpo=False``).
+
+    This is the default estimator in tinker-cookbook.
+
+    .. note::
+
+       Normalization is **per-group**, not batch-global.  SLIME/VERL whiten
+       advantages across the entire DP batch, which requires distributed
+       coordination not available in Tinker's API architecture.
 
     Args:
         trajectory_groups_P: Groups of trajectories whose rewards
@@ -279,11 +288,20 @@ def normalized_grpo_advantage(
     eps: float = 1e-8,
     **kwargs: Any,
 ) -> list[torch.Tensor]:
-    """Normalized GRPO advantage: center and scale rewards within each group.
+    """Normalized GRPO advantage: center and scale rewards by per-group std.
 
-    Like standard GRPO, but divides by the standard deviation to produce
-    unit-variance advantages.  Falls back to zero advantages when the
-    standard deviation is below ``eps``.
+    Computes ``(reward_i - mean(rewards)) / std(rewards)`` within each group,
+    producing unit-variance advantages.  This is the standard GRPO formulation
+    from the original paper and corresponds to VERL's default behavior
+    (``norm_adv_by_std_in_grpo=True``).
+
+    Falls back to zero advantages when the standard deviation is below ``eps``.
+
+    .. note::
+
+       Normalization is **per-group**, not batch-global.  SLIME/VERL whiten
+       advantages across the entire DP batch, which requires distributed
+       coordination not available in Tinker's API architecture.
 
     Args:
         trajectory_groups_P: Groups of trajectories.
