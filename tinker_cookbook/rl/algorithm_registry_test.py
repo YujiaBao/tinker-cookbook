@@ -13,7 +13,7 @@ from tinker_cookbook.rl.algorithm_registry import (
     Registry,
     advantage_registry,
     get_advantage_fn,
-    get_policy_loss_config,
+    resolve_policy_loss_config,
     grpo_advantage,
     normalized_grpo_advantage,
     policy_loss_registry,
@@ -182,25 +182,25 @@ class TestPolicyLossRegistry:
         assert "ppo" in policy_loss_registry
 
     def test_importance_sampling_returns_correct_tuple(self) -> None:
-        loss_fn, config = get_policy_loss_config("importance_sampling")
+        loss_fn, config = resolve_policy_loss_config("importance_sampling")
         assert loss_fn == "importance_sampling"
         assert config is None
 
     def test_ppo_returns_correct_tuple(self) -> None:
-        loss_fn, config = get_policy_loss_config("ppo")
+        loss_fn, config = resolve_policy_loss_config("ppo")
         assert loss_fn == "ppo"
         assert config is not None
         assert config["clip_param"] == 0.2
 
     def test_ppo_custom_clip_param(self) -> None:
-        loss_fn, config = get_policy_loss_config("ppo", clip_param=0.3)
+        loss_fn, config = resolve_policy_loss_config("ppo", clip_param=0.3)
         assert loss_fn == "ppo"
         assert config is not None
         assert config["clip_param"] == 0.3
 
     def test_unknown_loss_raises(self) -> None:
         with pytest.raises(KeyError, match="Unknown policy loss"):
-            get_policy_loss_config("nonexistent_loss")
+            resolve_policy_loss_config("nonexistent_loss")
 
 
 # ---------------------------------------------------------------------------
@@ -222,11 +222,6 @@ class TestGlobalRegistries:
     def test_get_advantage_fn_returns_callable(self) -> None:
         fn = get_advantage_fn("grpo")
         assert callable(fn)
-
-
-# ---------------------------------------------------------------------------
-# Decorator API tests
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -297,12 +292,15 @@ class TestDecoratorApi:
         ) -> list[torch.Tensor]:
             return [torch.tensor([42.0]) for _ in trajectory_groups_P]
 
-        fn = get_advantage_fn("_test_custom_advantage")
-        assert fn is custom
+        try:
+            fn = get_advantage_fn("_test_custom_advantage")
+            assert fn is custom
 
-        group = _make_group([1.0])
-        result = fn([group])
-        assert torch.allclose(result[0], torch.tensor([42.0]))
+            group = _make_group([1.0])
+            result = fn([group])
+            assert torch.allclose(result[0], torch.tensor([42.0]))
+        finally:
+            advantage_registry._remove("_test_custom_advantage")
 
     def test_register_policy_loss_decorator(self) -> None:
 
@@ -310,7 +308,10 @@ class TestDecoratorApi:
         def custom(**kwargs: Any) -> tuple[str, dict[str, Any] | None]:
             return "importance_sampling", {"custom_key": True}
 
-        loss_fn, config = get_policy_loss_config("_test_custom_loss")
-        assert loss_fn == "importance_sampling"
-        assert config is not None
-        assert config["custom_key"] is True
+        try:
+            loss_fn, config = resolve_policy_loss_config("_test_custom_loss")
+            assert loss_fn == "importance_sampling"
+            assert config is not None
+            assert config["custom_key"] is True
+        finally:
+            policy_loss_registry._remove("_test_custom_loss")

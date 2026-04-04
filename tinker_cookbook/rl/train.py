@@ -545,9 +545,23 @@ def resolve_loss_fn(config: Config) -> tuple[LossFnType, dict[str, Any] | None]:
     """
     with trace.scope_span_sync("resolve_loss_fn"):
         if config.policy_loss_name is not None:
-            from tinker_cookbook.rl.algorithm_registry import get_policy_loss_config
+            if config.loss_fn_config is not None:
+                raise ValueError(
+                    f"Both 'policy_loss_name' ({config.policy_loss_name!r}) and "
+                    f"'loss_fn_config' are set. Use one or the other: either set "
+                    f"'policy_loss_name' to use a registered configurator, or set "
+                    f"'loss_fn'/'loss_fn_config' directly."
+                )
+            if config.loss_fn != "importance_sampling":
+                logger.warning(
+                    "Both 'policy_loss_name' (%r) and 'loss_fn' (%r) are set. "
+                    "'policy_loss_name' takes precedence; 'loss_fn' will be ignored.",
+                    config.policy_loss_name,
+                    config.loss_fn,
+                )
+            from tinker_cookbook.rl.algorithm_registry import resolve_policy_loss_config
 
-            return get_policy_loss_config(config.policy_loss_name)
+            return resolve_policy_loss_config(config.policy_loss_name)
         return config.loss_fn, config.loss_fn_config
 
 

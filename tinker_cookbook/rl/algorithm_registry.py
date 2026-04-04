@@ -9,7 +9,7 @@ Usage::
         register_advantage,
         register_policy_loss,
         get_advantage_fn,
-        get_policy_loss_config,
+        resolve_policy_loss_config,
     )
 
     # Register a custom advantage estimator
@@ -24,14 +24,14 @@ Usage::
 
     # Look up registered functions
     advantage_fn = get_advantage_fn("grpo")
-    loss_fn, loss_fn_config = get_policy_loss_config("ppo")
+    loss_fn, loss_fn_config = resolve_policy_loss_config("ppo")
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 import torch
 from tinker.types import LossFnType
@@ -64,7 +64,10 @@ Returns the Tinker loss function name and optional config dict.
 # ---------------------------------------------------------------------------
 
 
-class Registry[T]:
+T = TypeVar("T")
+
+
+class Registry(Generic[T]):
     """A simple dict-based registry mapping string names to callables.
 
     Type parameter ``T`` is the callable type stored in the registry
@@ -105,6 +108,19 @@ class Registry[T]:
                 f"Available: {list(self._entries)}"
             )
         return self._entries[name]
+
+    def _remove(self, name: str) -> None:
+        """Remove a registered entry by name (for testing only).
+
+        Raises:
+            KeyError: If ``name`` is not registered.
+        """
+        if name not in self._entries:
+            raise KeyError(
+                f"Cannot remove unknown {self._kind} '{name}'. "
+                f"Available: {list(self._entries)}"
+            )
+        del self._entries[name]
 
     def list_names(self) -> list[str]:
         """Return all registered names in insertion order."""
@@ -182,7 +198,7 @@ def get_advantage_fn(name: str) -> AdvantageEstimator:
     return advantage_registry.get(name)
 
 
-def get_policy_loss_config(name: str, **kwargs: Any) -> tuple[LossFnType, dict[str, Any] | None]:
+def resolve_policy_loss_config(name: str, **kwargs: Any) -> tuple[LossFnType, dict[str, Any] | None]:
     """Retrieve and call a registered policy loss configurator.
 
     Args:
