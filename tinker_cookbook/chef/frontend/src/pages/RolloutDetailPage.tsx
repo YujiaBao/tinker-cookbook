@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
-import type { RolloutDetail, LogtreeNode, LogtreeResponse } from '../api/types';
+import type { RolloutDetail, RolloutSummary, LogtreeNode, LogtreeResponse } from '../api/types';
 
 export function RolloutDetailPage() {
   const { runId, iteration, groupIdx, trajIdx } = useParams<{
@@ -10,8 +10,10 @@ export function RolloutDetailPage() {
     groupIdx: string;
     trajIdx: string;
   }>();
+  const navigate = useNavigate();
   const [rollout, setRollout] = useState<RolloutDetail | null>(null);
   const [logtree, setLogtree] = useState<LogtreeResponse | null>(null);
+  const [siblings, setSiblings] = useState<RolloutSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -21,13 +23,16 @@ export function RolloutDetailPage() {
     const gIdx = Number(groupIdx);
     const tIdx = Number(trajIdx);
 
+    setLoading(true);
     Promise.all([
       api.getRolloutDetail(runId, iter, gIdx, tIdx),
       api.getLogtree(runId, iter).catch(() => null),
+      api.getRollouts(runId, iter),
     ])
-      .then(([rolloutData, logtreeData]) => {
+      .then(([rolloutData, logtreeData, rolloutsResp]) => {
         setRollout(rolloutData);
         setLogtree(logtreeData);
+        setSiblings(rolloutsResp.rollouts);
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -37,21 +42,67 @@ export function RolloutDetailPage() {
   if (error) return <div className="empty-state">{error}</div>;
   if (!rollout || !runId) return <div className="empty-state">Rollout not found</div>;
 
+  // Find current position among siblings for prev/next
+  const currentIdx = siblings.findIndex(
+    (s) => s.group_idx === rollout.group_idx && s.traj_idx === rollout.traj_idx
+  );
+  const prevSibling = currentIdx > 0 ? siblings[currentIdx - 1] : null;
+  const nextSibling = currentIdx >= 0 && currentIdx < siblings.length - 1 ? siblings[currentIdx + 1] : null;
+
+  const navTo = (s: RolloutSummary) =>
+    `/runs/${runId}/iterations/${iteration}/rollouts/${s.group_idx}/${s.traj_idx}`;
+
   return (
     <div>
-      <div className="breadcrumb">
-        <Link to="/">Runs</Link>
-        <span>/</span>
-        <Link to={`/runs/${runId}`}>{runId}</Link>
-        <span>/</span>
-        <span>Iteration {iteration}</span>
-        <span>/</span>
-        <span>Rollout ({groupIdx}, {trajIdx})</span>
+      {/* Navigation bar: breadcrumb + prev/next */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+        <div className="breadcrumb" style={{ marginBottom: 0 }}>
+          <Link to="/">Runs</Link>
+          <span>/</span>
+          <Link to={`/runs/${runId}`}>{runId}</Link>
+          <span>/</span>
+          <span>Iter {iteration}</span>
+          <span>/</span>
+          <span>({groupIdx}, {trajIdx})</span>
+        </div>
+        <div style={{ display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
+          {currentIdx >= 0 && (
+            <span className="text-muted" style={{ fontSize: '0.6875rem', marginRight: '0.25rem' }}>
+              {currentIdx + 1} of {siblings.length}
+            </span>
+          )}
+          <button
+            className="tab"
+            onClick={() => prevSibling && navigate(navTo(prevSibling))}
+            disabled={!prevSibling}
+            style={{
+              padding: '0.25rem 0.5rem',
+              fontSize: '0.75rem',
+              opacity: prevSibling ? 1 : 0.3,
+              borderBottom: 'none',
+            }}
+          >
+            Prev
+          </button>
+          <button
+            className="tab"
+            onClick={() => nextSibling && navigate(navTo(nextSibling))}
+            disabled={!nextSibling}
+            style={{
+              padding: '0.25rem 0.5rem',
+              fontSize: '0.75rem',
+              opacity: nextSibling ? 1 : 0.3,
+              borderBottom: 'none',
+            }}
+          >
+            Next
+          </button>
+        </div>
       </div>
 
       {/* Header with rollout metadata */}
-      <div className="card" style={{ marginBottom: '16px' }}>
-        <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+      <div className="card" style={{ marginBottom: '0.75rem' }}>
+        <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <MetaField label="Iteration" value={String(rollout.iteration)} />
           <MetaField label="Group" value={String(rollout.group_idx)} />
           <MetaField label="Trajectory" value={String(rollout.traj_idx)} />
@@ -66,49 +117,43 @@ export function RolloutDetailPage() {
             color={rewardColor(rollout.final_reward)}
           />
           <MetaField label="Steps" value={String(rollout.steps.length)} />
-          <MetaField label="Final Context" value={`${rollout.final_ob_len} tokens`} />
+          <MetaField label="Context" value={`${rollout.final_ob_len} tok`} />
+          {rollout.sampling_client_step != null && (
+            <MetaField label="Sampled At" value={`step ${rollout.sampling_client_step}`} />
+          )}
           {rollout.tags.length > 0 && (
             <div>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '2px' }}>
-                Tags
-              </div>
-              <div>
-                {rollout.tags.map((tag) => (
-                  <span key={tag} className="tag">{tag}</span>
-                ))}
-              </div>
+              <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)', marginBottom: '2px' }}>Tags</div>
+              <div>{rollout.tags.map((tag) => <span key={tag} className="tag">{tag}</span>)}</div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Per-step timeline */}
-      <div className="card" style={{ marginBottom: '16px' }}>
-        <div className="card-title" style={{ marginBottom: '12px' }}>Step Timeline</div>
-        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+      {/* Step timeline */}
+      <div className="card" style={{ marginBottom: '0.75rem' }}>
+        <div className="card-title" style={{ marginBottom: '0.5rem' }}>Step Timeline</div>
+        <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap' }}>
           {rollout.steps.map((step) => (
             <div
               key={step.step_idx}
               title={`Step ${step.step_idx}: reward=${step.reward}, ob=${step.ob_len}, ac=${step.ac_len}`}
               style={{
                 flex: '0 0 auto',
-                padding: '4px 8px',
+                padding: '3px 6px',
                 borderRadius: '4px',
-                background: step.episode_done
-                  ? 'rgba(34, 197, 94, 0.15)'
-                  : 'var(--bg-tertiary)',
+                background: step.episode_done ? 'rgba(34, 197, 94, 0.15)' : 'var(--bg-tertiary)',
                 border: `1px solid ${step.episode_done ? 'var(--success)' : 'var(--border)'}`,
-                fontSize: '0.7rem',
+                fontSize: '0.625rem',
                 textAlign: 'center',
+                minWidth: '42px',
               }}
             >
-              <div className="mono" style={{ fontWeight: 600 }}>
-                {step.step_idx}
-              </div>
+              <div className="mono" style={{ fontWeight: 600 }}>{step.step_idx}</div>
               <div className="mono" style={{ color: rewardColor(step.reward) }}>
                 r={step.reward.toFixed(2)}
               </div>
-              <div className="text-muted" style={{ fontSize: '0.65rem' }}>
+              <div className="text-muted" style={{ fontSize: '0.5625rem' }}>
                 {step.ob_len}+{step.ac_len}t
               </div>
             </div>
@@ -116,23 +161,23 @@ export function RolloutDetailPage() {
         </div>
       </div>
 
-      {/* Conversation from logtree (if available) */}
+      {/* Conversation from logtree */}
       {logtree && (
-        <div className="card" style={{ marginBottom: '16px' }}>
-          <div className="card-title" style={{ marginBottom: '12px' }}>Conversation</div>
+        <div className="card" style={{ marginBottom: '0.75rem' }}>
+          <div className="card-title" style={{ marginBottom: '0.5rem' }}>Conversation</div>
           <LogtreeConversation node={logtree.root} />
         </div>
       )}
 
       {/* Step details table */}
       <div className="card">
-        <div className="card-title" style={{ marginBottom: '12px' }}>Step Details</div>
-        <table className="data-table">
+        <div className="card-title" style={{ marginBottom: '0.5rem' }}>Step Details</div>
+        <table>
           <thead>
             <tr>
               <th>Step</th>
-              <th>Obs Tokens</th>
-              <th>Action Tokens</th>
+              <th>Obs</th>
+              <th>Action</th>
               <th>Reward</th>
               <th>Done</th>
               <th>Metrics</th>
@@ -150,10 +195,10 @@ export function RolloutDetailPage() {
                   </span>
                 </td>
                 <td>{step.episode_done ? 'Yes' : ''}</td>
-                <td style={{ fontSize: '0.75rem' }}>
+                <td style={{ fontSize: '0.6875rem' }}>
                   {Object.entries(step.metrics)
                     .map(([k, v]) => `${k}=${typeof v === 'number' ? v.toFixed(3) : v}`)
-                    .join(', ') || '—'}
+                    .join(', ') || '-'}
                 </td>
               </tr>
             ))}
@@ -164,23 +209,11 @@ export function RolloutDetailPage() {
   );
 }
 
-function MetaField({
-  label,
-  value,
-  color,
-}: {
-  label: string;
-  value: string;
-  color?: string;
-}) {
+function MetaField({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <div>
-      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '2px' }}>
-        {label}
-      </div>
-      <div className="mono" style={{ fontWeight: 600, color: color ?? 'var(--text-primary)' }}>
-        {value}
-      </div>
+      <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)', marginBottom: '2px' }}>{label}</div>
+      <div className="mono" style={{ fontWeight: 600, color: color ?? 'var(--text-primary)' }}>{value}</div>
     </div>
   );
 }
@@ -191,30 +224,22 @@ function rewardColor(reward: number): string {
   return 'var(--reward-low)';
 }
 
-/** Recursively render logtree nodes, extracting conversations. */
 function LogtreeConversation({ node }: { node: LogtreeNode }) {
-  // If this node has conversation data, render it
   if (node.data && (node.data as { type?: string }).type === 'conversation') {
     const messages = (node.data as { messages?: ConvMessage[] }).messages ?? [];
     return (
       <div className="conversation">
-        {messages.map((msg, i) => (
-          <ConversationMessage key={i} message={msg} />
-        ))}
+        {messages.map((msg, i) => <ConversationMessage key={i} message={msg} />)}
       </div>
     );
   }
-
-  // Otherwise, recurse into children
   if (!node.children) return null;
   return (
     <>
       {node.children.map((child, i) => {
         if (typeof child === 'string') {
           return child.trim() ? (
-            <div key={i} style={{ padding: '4px 0', color: 'var(--text-secondary)' }}>
-              {child}
-            </div>
+            <div key={i} style={{ padding: '4px 0', color: 'var(--text-secondary)' }}>{child}</div>
           ) : null;
         }
         return <LogtreeConversation key={i} node={child} />;
@@ -223,11 +248,7 @@ function LogtreeConversation({ node }: { node: LogtreeNode }) {
   );
 }
 
-interface ConvMessage {
-  role: string;
-  content: string | ContentPart[];
-}
-
+interface ConvMessage { role: string; content: string | ContentPart[]; }
 interface ContentPart {
   type: string;
   text?: string;
@@ -239,23 +260,20 @@ interface ContentPart {
 
 function ConversationMessage({ message }: { message: ConvMessage }) {
   const [thinkingOpen, setThinkingOpen] = useState(false);
-
   return (
-    <div className={`message role-${message.role}`}>
+    <div className={`message message-${message.role}`}>
       <div className="message-role">{message.role}</div>
       <div className="message-content">
         {typeof message.content === 'string' ? (
           message.content
         ) : (
           message.content.map((part, i) => {
-            if (part.type === 'text') {
-              return <span key={i}>{part.text}</span>;
-            }
+            if (part.type === 'text') return <span key={i}>{part.text}</span>;
             if (part.type === 'thinking' && part.thinking) {
               return (
                 <div key={i} className="thinking-block">
                   <div className="thinking-toggle" onClick={() => setThinkingOpen(!thinkingOpen)}>
-                    {thinkingOpen ? '▼' : '▶'} Thinking
+                    {thinkingOpen ? '\u25bc' : '\u25b6'} Thinking
                   </div>
                   {thinkingOpen && <div className="thinking-content">{part.thinking}</div>}
                 </div>
@@ -264,7 +282,7 @@ function ConversationMessage({ message }: { message: ConvMessage }) {
             if (part.type === 'tool_call' && part.tool_call) {
               return (
                 <div key={i} className="tool-call-block">
-                  <div className="tool-call-label">Tool Call: {part.tool_call.function.name}</div>
+                  <div className="tool-call-label">Tool: {part.tool_call.function.name}</div>
                   <pre className="tool-call-code">{part.tool_call.function.arguments}</pre>
                 </div>
               );
@@ -272,25 +290,13 @@ function ConversationMessage({ message }: { message: ConvMessage }) {
             if (part.type === 'unparsed_tool_call') {
               return (
                 <div key={i} className="tool-call-block" style={{ borderColor: 'var(--error)' }}>
-                  <div className="tool-call-label" style={{ color: 'var(--error)' }}>
-                    Unparsed Tool Call
-                  </div>
+                  <div className="tool-call-label" style={{ color: 'var(--error)' }}>Unparsed Tool Call</div>
                   <pre className="tool-call-code">{part.raw_text}</pre>
-                  {part.error && (
-                    <div style={{ color: 'var(--error)', fontSize: '0.75rem', marginTop: '4px' }}>
-                      {part.error}
-                    </div>
-                  )}
+                  {part.error && <div style={{ color: 'var(--error)', fontSize: '0.6875rem', marginTop: '0.25rem' }}>{part.error}</div>}
                 </div>
               );
             }
-            if (part.type === 'image') {
-              return (
-                <span key={i} className="tag">
-                  [Image]
-                </span>
-              );
-            }
+            if (part.type === 'image') return <span key={i} className="tag">[Image]</span>;
             return null;
           })
         )}
