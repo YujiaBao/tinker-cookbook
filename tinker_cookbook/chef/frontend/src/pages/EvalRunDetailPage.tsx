@@ -108,7 +108,7 @@ export function EvalRunDetailPage() {
   return (
     <div>
       <div className="breadcrumb">
-        <Link to="/eval">Eval</Link>
+        <Link to="/">Dashboard</Link>
         <span>/</span>
         <span>{evalRunId}</span>
       </div>

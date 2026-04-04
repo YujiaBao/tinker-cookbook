@@ -220,7 +220,8 @@ td, .data-table td {
   color: var(--text-secondary);
 }
 
-tbody tr { cursor: pointer; transition: background 0.15s; }
+tbody tr { transition: background 0.15s; }
+tbody tr.clickable { cursor: pointer; }
 tbody tr:hover td { background: var(--bg-hover); }
 
 /* ── Tabs ─────────────────────────────────────────────────────────────── */
@@ -233,6 +234,8 @@ tbody tr:hover td { background: var(--bg-hover); }
   padding: 2px;
   margin-bottom: 1rem;
   width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .tab {
@@ -556,4 +559,5 @@ select:focus, input:focus { outline: none; border-color: var(--accent); }
   .chart-grid, .charts-grid { grid-template-columns: 1fr; }
   .filters-bar { padding: 0.5rem; }
   .app-nav { margin-left: 0.5rem; }
+  .app-tagline { display: none; }
 }

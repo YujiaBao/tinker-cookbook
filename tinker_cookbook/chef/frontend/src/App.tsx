@@ -49,6 +49,12 @@ function App() {
             <Route path="/runs/:runId/iterations/:iteration/rollouts/:groupIdx/:trajIdx" element={<RolloutDetailPage />} />
             <Route path="/eval/:evalRunId" element={<EvalRunDetailPage />} />
             <Route path="/eval/:evalRunId/:benchmark/:idx" element={<EvalTrajectoryPage />} />
+            <Route path="*" element={
+              <div className="empty-state">
+                <div style={{ fontSize: '1.25rem', marginBottom: '0.5rem' }}>Page not found</div>
+                <Link to="/">Back to Dashboard</Link>
+              </div>
+            } />
           </Routes>
         </main>
       </div>

@@ -28,7 +28,7 @@ export function EvalTrajectoryPage() {
   return (
     <div>
       <div className="breadcrumb">
-        <Link to="/eval">Eval</Link>
+        <Link to="/">Dashboard</Link>
         <span>/</span>
         <Link to={`/eval/${evalRunId}`}>{evalRunId}</Link>
         <span>/</span>

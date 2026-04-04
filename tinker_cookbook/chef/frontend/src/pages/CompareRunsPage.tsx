@@ -134,8 +134,8 @@ export function CompareRunsPage() {
               <XAxis dataKey="step" stroke="var(--text-muted)" tick={{ fontSize: 10 }} type="number" allowDuplicatedCategory={false} />
               <YAxis stroke="var(--text-muted)" tick={{ fontSize: 10 }} />
               <Tooltip
-                contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '6px', fontSize: '0.75rem' }}
-                labelStyle={{ color: '#f1f5f9', fontWeight: 600 }}
+                contentStyle={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '0.75rem' }}
+                labelStyle={{ color: 'var(--text-primary)', fontWeight: 600 }}
               />
               {runData.map((rd, i) => (
                 <Line
@@ -169,7 +169,7 @@ export function CompareRunsPage() {
                   <XAxis dataKey="step" stroke="var(--text-muted)" tick={{ fontSize: 9 }} type="number" allowDuplicatedCategory={false} />
                   <YAxis stroke="var(--text-muted)" tick={{ fontSize: 9 }} width={50} />
                   <Tooltip
-                    contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '6px', fontSize: '0.7rem' }}
+                    contentStyle={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '0.7rem' }}
                   />
                   {runData.map((rd, i) => (
                     <Line

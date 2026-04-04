@@ -8,6 +8,7 @@ export function DashboardPage() {
   const [runs, setRuns] = useState<RunInfo[]>([]);
   const [scores, setScores] = useState<ScoresTableRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [showAllRuns, setShowAllRuns] = useState(false);
   const navigate = useNavigate();
 
@@ -20,11 +21,20 @@ export function DashboardPage() {
         setRuns(runList);
         setScores(scoreList);
       })
-      .catch(() => {})
+      .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
 
   if (loading) return <div className="loading">Loading dashboard...</div>;
+  if (error) return (
+    <div className="error-msg">
+      <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>Could not connect to backend</div>
+      <div>{error}</div>
+      <div style={{ marginTop: '0.75rem', fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+        Make sure <code className="mono">tinker-chef serve</code> is running and pointing at your log directory.
+      </div>
+    </div>
+  );
 
   const activeRuns = runs.filter((r) => r.status === 'running');
   const displayedRuns = showAllRuns ? runs : runs.slice(0, 5);

@@ -56,13 +56,13 @@ function MetricChart({ prefix, metricKeys, data }: { prefix: string; metricKeys:
           <YAxis stroke="var(--text-muted)" tick={{ fontSize: 10 }} width={55} />
           <Tooltip
             contentStyle={{
-              background: '#1e293b',
-              border: '1px solid #334155',
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--border)',
               borderRadius: '6px',
               fontSize: '0.75rem',
               padding: '0.375rem 0.5rem',
             }}
-            labelStyle={{ color: '#f1f5f9', fontWeight: 600, marginBottom: '0.25rem' }}
+            labelStyle={{ color: 'var(--text-primary)', fontWeight: 600, marginBottom: '0.25rem' }}
             itemStyle={{ padding: '1px 0' }}
           />
           {metricKeys.map((key, i) => (
