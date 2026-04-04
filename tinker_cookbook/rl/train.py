@@ -546,7 +546,7 @@ def resolve_loss_fn(config: Config) -> tuple[LossFnType, dict[str, Any] | None]:
     with trace.scope_span_sync("resolve_loss_fn"):
         if config.policy_loss_name is not None:
             if config.loss_fn_config is not None:
-                raise ValueError(
+                raise ConfigurationError(
                     f"Both 'policy_loss_name' ({config.policy_loss_name!r}) and "
                     f"'loss_fn_config' are set. Use one or the other: either set "
                     f"'policy_loss_name' to use a registered configurator, or set "

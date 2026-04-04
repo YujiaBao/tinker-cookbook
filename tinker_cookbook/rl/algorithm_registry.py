@@ -36,6 +36,7 @@ from typing import Any, Generic, TypeVar
 import torch
 from tinker.types import LossFnType
 
+from tinker_cookbook.exceptions import ConfigurationError
 from tinker_cookbook.rl.types import TrajectoryGroup
 
 logger = logging.getLogger(__name__)
@@ -75,19 +76,31 @@ class Registry(Generic[T]):
     """
 
     def __init__(self, kind: str) -> None:
+        """Initialize a new registry.
+
+        Args:
+            kind: Human-readable category name used in error messages
+                (e.g. ``"advantage estimator"``).
+        """
         self._kind = kind
         self._entries: dict[str, T] = {}
 
     def register(self, name: str) -> Callable[[T], T]:
         """Decorator that registers ``fn`` under ``name``.
 
+        Args:
+            name: Unique key for this entry.
+
+        Returns:
+            A decorator that stores the wrapped callable in the registry.
+
         Raises:
-            ValueError: If ``name`` is already registered.
+            ConfigurationError: If ``name`` is already registered.
         """
 
         def decorator(fn: T) -> T:
             if name in self._entries:
-                raise ValueError(
+                raise ConfigurationError(
                     f"{self._kind} '{name}' is already registered. "
                     f"Registered names: {list(self._entries)}"
                 )
@@ -98,6 +111,12 @@ class Registry(Generic[T]):
 
     def get(self, name: str) -> T:
         """Look up a registered entry by name.
+
+        Args:
+            name: The registered key to retrieve.
+
+        Returns:
+            The callable previously registered under ``name``.
 
         Raises:
             KeyError: If ``name`` has not been registered.
@@ -112,6 +131,9 @@ class Registry(Generic[T]):
     def _remove(self, name: str) -> None:
         """Remove a registered entry by name (for testing only).
 
+        Args:
+            name: The registered key to remove.
+
         Raises:
             KeyError: If ``name`` is not registered.
         """
@@ -123,7 +145,11 @@ class Registry(Generic[T]):
         del self._entries[name]
 
     def list_names(self) -> list[str]:
-        """Return all registered names in insertion order."""
+        """Return all registered names in insertion order.
+
+        Returns:
+            List of registered name strings.
+        """
         return list(self._entries)
 
     def __contains__(self, name: str) -> bool:
