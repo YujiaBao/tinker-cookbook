@@ -258,7 +258,8 @@ def filter_low_variance_groups(
     trajectory_groups_P: list[TrajectoryGroup],
     min_reward_std: float,
     max_filter_ratio: float,
-) -> tuple[list[TrajectoryGroup], int]:
+    env_group_builders_P: list | None = None,
+) -> tuple[list[TrajectoryGroup], int, list | None]:
     """Filter trajectory groups with reward standard deviation below a threshold.
 
     This implements the DAPO-style dynamic sampling filter: groups where the
@@ -266,6 +267,10 @@ def filter_low_variance_groups(
     learning signal and are candidates for removal. At most
     ``max_filter_ratio`` of groups will be filtered to ensure the batch does
     not become too small.
+
+    When ``env_group_builders_P`` is provided, it is filtered in lockstep so
+    that the returned builders remain aligned with the returned trajectory
+    groups.
 
     Args:
         trajectory_groups_P (list[TrajectoryGroup]): Groups of trajectories
@@ -275,43 +280,61 @@ def filter_low_variance_groups(
         max_filter_ratio (float): Maximum fraction of groups that may be
             filtered. Must be in [0, 1). E.g. 0.5 means at most half the
             groups can be removed.
+        env_group_builders_P (list | None): Optional parallel list of
+            EnvGroupBuilder instances to filter in lockstep. If provided, must
+            have the same length as ``trajectory_groups_P``.
 
     Returns:
-        tuple[list[TrajectoryGroup], int]: A tuple of (filtered groups, number
-            of groups removed). If all groups would be filtered, returns the
-            original list with 0 filtered.
+        tuple[list[TrajectoryGroup], int, list | None]: A tuple of
+            (filtered trajectory groups, number of groups removed, filtered
+            builders or None). If all groups would be filtered, returns the
+            original lists with 0 filtered.
     """
     assert 0.0 <= max_filter_ratio < 1.0, (
         f"max_filter_ratio must be in [0, 1), got {max_filter_ratio}"
     )
+    if env_group_builders_P is not None:
+        assert len(env_group_builders_P) == len(trajectory_groups_P), (
+            f"env_group_builders_P length ({len(env_group_builders_P)}) must match "
+            f"trajectory_groups_P length ({len(trajectory_groups_P)})"
+        )
 
-    # Compute per-group reward std and classify as keep/filter
-    keep: list[TrajectoryGroup] = []
-    candidates_to_filter: list[TrajectoryGroup] = []
-    for group in trajectory_groups_P:
+    # Compute per-group reward std and classify as keep/filter by index
+    keep_indices: list[int] = []
+    filter_candidate_indices: list[int] = []
+    for i, group in enumerate(trajectory_groups_P):
         rewards = group.get_total_rewards()
         std = float(torch.tensor(rewards).std().item()) if len(rewards) > 1 else 0.0
         if std <= min_reward_std:
-            candidates_to_filter.append(group)
+            filter_candidate_indices.append(i)
         else:
-            keep.append(group)
+            keep_indices.append(i)
 
     # Cap the number of groups we actually filter
     max_to_filter = int(len(trajectory_groups_P) * max_filter_ratio)
-    num_to_filter = min(len(candidates_to_filter), max_to_filter)
+    num_to_filter = min(len(filter_candidate_indices), max_to_filter)
 
     if num_to_filter == 0:
-        return trajectory_groups_P, 0
+        return trajectory_groups_P, 0, env_group_builders_P
 
     # Keep some of the candidate groups if we'd exceed the filter cap
-    num_to_keep_from_candidates = len(candidates_to_filter) - num_to_filter
-    keep.extend(candidates_to_filter[:num_to_keep_from_candidates])
+    num_to_keep_from_candidates = len(filter_candidate_indices) - num_to_filter
+    keep_indices.extend(filter_candidate_indices[:num_to_keep_from_candidates])
 
-    if not keep:
+    if not keep_indices:
         logger.warning(
             "Dynamic sampling: all groups have low reward variance. "
             "Returning original groups to avoid empty batch."
         )
-        return trajectory_groups_P, 0
+        return trajectory_groups_P, 0, env_group_builders_P
 
-    return keep, num_to_filter
+    # Sort to preserve original ordering
+    keep_indices.sort()
+    kept_groups = [trajectory_groups_P[i] for i in keep_indices]
+    kept_builders = (
+        [env_group_builders_P[i] for i in keep_indices]
+        if env_group_builders_P is not None
+        else None
+    )
+
+    return kept_groups, num_to_filter, kept_builders

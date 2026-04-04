@@ -39,7 +39,7 @@ class TestFilterLowVarianceGroups:
             _make_group([1.0, 0.0, 0.5]),
             _make_group([0.0, 1.0, 0.0]),
         ]
-        filtered, num_removed = filter_low_variance_groups(
+        filtered, num_removed, _ = filter_low_variance_groups(
             groups, min_reward_std=0.0, max_filter_ratio=0.5
         )
         assert len(filtered) == 2
@@ -50,7 +50,7 @@ class TestFilterLowVarianceGroups:
         diverse_group = _make_group([1.0, 0.0])
         constant_group = _make_group([1.0, 1.0])
         groups = [diverse_group, constant_group]
-        filtered, num_removed = filter_low_variance_groups(
+        filtered, num_removed, _ = filter_low_variance_groups(
             groups, min_reward_std=0.0, max_filter_ratio=0.5
         )
         assert len(filtered) == 1
@@ -65,7 +65,7 @@ class TestFilterLowVarianceGroups:
         constant_3 = _make_group([1.0, 1.0])
         groups = [diverse, constant_1, constant_2, constant_3]
         # max_filter_ratio=0.5 means at most 2 of 4 groups can be removed
-        filtered, num_removed = filter_low_variance_groups(
+        filtered, num_removed, _ = filter_low_variance_groups(
             groups, min_reward_std=0.0, max_filter_ratio=0.5
         )
         assert num_removed == 2
@@ -78,7 +78,7 @@ class TestFilterLowVarianceGroups:
         high_var = _make_group([1.0, 0.0])  # std = 0.5
         low_var = _make_group([0.49, 0.51])  # std ~= 0.01
         groups = [high_var, low_var]
-        filtered, num_removed = filter_low_variance_groups(
+        filtered, num_removed, _ = filter_low_variance_groups(
             groups, min_reward_std=0.05, max_filter_ratio=0.5
         )
         assert len(filtered) == 1
@@ -91,7 +91,7 @@ class TestFilterLowVarianceGroups:
             _make_group([1.0, 1.0]),
             _make_group([0.0, 0.0]),
         ]
-        filtered, num_removed = filter_low_variance_groups(
+        filtered, num_removed, _ = filter_low_variance_groups(
             groups, min_reward_std=0.0, max_filter_ratio=0.5
         )
         # max_filter_ratio=0.5 allows filtering 1, but we'd have only 1 left
@@ -105,7 +105,7 @@ class TestFilterLowVarianceGroups:
             _make_group([1.0, 1.0]),
             _make_group([0.0, 0.0]),
         ]
-        filtered, num_removed = filter_low_variance_groups(
+        filtered, num_removed, _ = filter_low_variance_groups(
             groups, min_reward_std=0.0, max_filter_ratio=0.0
         )
         assert len(filtered) == 2
@@ -116,7 +116,7 @@ class TestFilterLowVarianceGroups:
         single = _make_group([1.0])
         diverse = _make_group([1.0, 0.0])
         groups = [single, diverse]
-        filtered, num_removed = filter_low_variance_groups(
+        filtered, num_removed, _ = filter_low_variance_groups(
             groups, min_reward_std=0.0, max_filter_ratio=0.5
         )
         assert len(filtered) == 1
@@ -125,11 +125,37 @@ class TestFilterLowVarianceGroups:
 
     def test_empty_input(self) -> None:
         """Empty input should return empty output with 0 filtered."""
-        filtered, num_removed = filter_low_variance_groups(
+        filtered, num_removed, filtered_builders = filter_low_variance_groups(
             [], min_reward_std=0.0, max_filter_ratio=0.5
         )
         assert filtered == []
         assert num_removed == 0
+        assert filtered_builders is None
+
+    def test_env_group_builders_filtered_in_lockstep(self) -> None:
+        """env_group_builders_P should be filtered in lockstep with trajectory groups."""
+        diverse_group = _make_group([1.0, 0.0])
+        constant_group = _make_group([1.0, 1.0])
+        groups = [diverse_group, constant_group]
+        builders = ["builder_diverse", "builder_constant"]
+        filtered, num_removed, filtered_builders = filter_low_variance_groups(
+            groups,
+            min_reward_std=0.0,
+            max_filter_ratio=0.5,
+            env_group_builders_P=builders,
+        )
+        assert len(filtered) == 1
+        assert num_removed == 1
+        assert filtered[0] is diverse_group
+        assert filtered_builders == ["builder_diverse"]
+
+    def test_env_group_builders_none_when_not_provided(self) -> None:
+        """When env_group_builders_P is None, returned builders should be None."""
+        groups = [_make_group([1.0, 0.0])]
+        filtered, num_removed, filtered_builders = filter_low_variance_groups(
+            groups, min_reward_std=0.0, max_filter_ratio=0.5
+        )
+        assert filtered_builders is None
 
 
 class TestDynamicSamplingConfig:
@@ -154,6 +180,15 @@ class TestDynamicSamplingConfig:
         assert cfg.oversample_ratio == 2.0
         assert cfg.min_reward_std == 0.1
         assert cfg.max_filter_ratio == 0.3
+
+    def test_config_rejects_low_oversample_ratio(self) -> None:
+        """DynamicSamplingConfig should reject oversample_ratio < 1.0."""
+        import pytest
+
+        from tinker_cookbook.rl.train import DynamicSamplingConfig
+
+        with pytest.raises(ValueError, match="oversample_ratio must be >= 1.0"):
+            DynamicSamplingConfig(oversample_ratio=0.5)
 
     def test_config_field_on_rl_config(self) -> None:
         """Config.dynamic_sampling should default to None."""

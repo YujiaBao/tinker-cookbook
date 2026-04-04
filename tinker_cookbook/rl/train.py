@@ -10,7 +10,6 @@ import logging
 import math
 import re
 import time
-from collections import deque
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Sequence
 from concurrent.futures import Executor
 from contextlib import contextmanager
@@ -412,6 +411,12 @@ class AsyncConfig:
     groups_per_batch: int
 
 
+def _validate_oversample_ratio(v: float) -> float:
+    if v < 1.0:
+        raise ValueError(f"oversample_ratio must be >= 1.0, got {v}")
+    return v
+
+
 @chz.chz
 class DynamicSamplingConfig:
     """Configuration for DAPO-style dynamic sampling.
@@ -433,7 +438,7 @@ class DynamicSamplingConfig:
             at most half the groups can be removed.
     """
 
-    oversample_ratio: float = 1.5
+    oversample_ratio: float = chz.field(default=1.5, munger=lambda _, v: _validate_oversample_ratio(v))
     min_reward_std: float = 0.0
     max_filter_ratio: float = 0.5
 
@@ -1720,10 +1725,8 @@ async def do_sync_training(
         config.ttl_seconds,
     )
 
-    # Dynamic sampling: buffer of extra builders for replenishment
+    # Dynamic sampling config shorthand
     ds_cfg = config.dynamic_sampling
-    ds_buffer: deque[EnvGroupBuilder] = deque()
-    ds_next_batch_idx = end_batch  # index for pulling extra builders from beyond the batch range
 
     for i_batch in range(start_batch, end_batch):
         metrics: dict[str, Any] = {
@@ -1744,28 +1747,29 @@ async def do_sync_training(
             env_group_builders_P = list(dataset.get_batch(i_batch))
             nominal_batch_size = len(env_group_builders_P)
 
-            # Dynamic sampling: add oversampled builders from the buffer
+            # Dynamic sampling: oversample by pulling extra groups from other
+            # dataset batches (wrapping around). This matches how DAPO works:
+            # request more prompts upfront, then filter after rollouts.
+            num_oversampled = 0
             if ds_cfg is not None:
-                async with trace.scope_span("dynamic_sampling_replenish"):
+                async with trace.scope_span("dynamic_sampling_oversample"):
                     num_extra = math.ceil(nominal_batch_size * (ds_cfg.oversample_ratio - 1.0))
-                    # Pull from the buffer first
                     extra_builders: list[EnvGroupBuilder] = []
-                    while len(extra_builders) < num_extra and ds_buffer:
-                        extra_builders.append(ds_buffer.popleft())
-                    # If buffer is exhausted, pull from future dataset batches
-                    while len(extra_builders) < num_extra and ds_next_batch_idx < len(dataset):
-                        future_batch = dataset.get_batch(ds_next_batch_idx)
-                        ds_next_batch_idx += 1
-                        for builder in future_batch:
+                    # Pull from subsequent batches, wrapping around the dataset
+                    extra_batch_idx = i_batch + 1
+                    while len(extra_builders) < num_extra:
+                        wrapped_idx = extra_batch_idx % len(dataset)
+                        batch = dataset.get_batch(wrapped_idx)
+                        for builder in batch:
                             extra_builders.append(builder)
                             if len(extra_builders) >= num_extra:
                                 break
-                        # Put any remainder into the buffer
-                        if len(extra_builders) > num_extra:
-                            for b in extra_builders[num_extra:]:
-                                ds_buffer.append(b)
-                            extra_builders = extra_builders[:num_extra]
+                        extra_batch_idx += 1
+                        # Safety: don't loop more than the full dataset
+                        if extra_batch_idx - (i_batch + 1) >= len(dataset):
+                            break
                     env_group_builders_P.extend(extra_builders)
+                    num_oversampled = len(extra_builders)
 
             # Initialize logtree trace for this iteration if logging is enabled
             iter_dir = iteration_dir(config.log_path, i_batch)
@@ -1830,10 +1834,15 @@ async def do_sync_training(
                     ],
                 )
 
-                if config.remove_constant_reward_groups:
+                # Dynamic sampling subsumes remove_constant_reward_groups:
+                # filter_low_variance_groups with min_reward_std=0.0 is a strict
+                # superset (it removes all zero-variance groups, same as
+                # remove_constant_reward_groups, plus respects max_filter_ratio).
+                if config.remove_constant_reward_groups and ds_cfg is None:
                     trajectory_groups_P = remove_constant_reward_groups(trajectory_groups_P)
 
-                # Dynamic sampling: filter low-variance groups
+                # Dynamic sampling: filter low-variance groups (and keep
+                # env_group_builders_P aligned)
                 if ds_cfg is not None:
                     async with trace.scope_span("dynamic_sampling_filter"):
                         n_total = len(trajectory_groups_P)
@@ -1845,10 +1854,13 @@ async def do_sync_training(
                             std = float(torch.tensor(rewards).std().item()) if len(rewards) > 1 else 0.0
                             reward_stds.append(std)
 
-                        trajectory_groups_P, n_filtered = filter_low_variance_groups(
-                            trajectory_groups_P,
-                            min_reward_std=ds_cfg.min_reward_std,
-                            max_filter_ratio=ds_cfg.max_filter_ratio,
+                        trajectory_groups_P, n_filtered, env_group_builders_P = (
+                            filter_low_variance_groups(
+                                trajectory_groups_P,
+                                min_reward_std=ds_cfg.min_reward_std,
+                                max_filter_ratio=ds_cfg.max_filter_ratio,
+                                env_group_builders_P=env_group_builders_P,
+                            )
                         )
                         n_kept = len(trajectory_groups_P)
                         filter_ratio = n_filtered / n_total if n_total > 0 else 0.0
@@ -1858,7 +1870,7 @@ async def do_sync_training(
                         metrics["dynamic_sampling/groups_filtered"] = n_filtered
                         metrics["dynamic_sampling/groups_kept"] = n_kept
                         metrics["dynamic_sampling/filter_ratio"] = filter_ratio
-                        metrics["dynamic_sampling/buffer_size"] = len(ds_buffer)
+                        metrics["dynamic_sampling/num_oversampled"] = num_oversampled
                         if reward_stds:
                             metrics["dynamic_sampling/reward_std_mean"] = float(
                                 torch.tensor(reward_stds).mean().item()
@@ -1874,6 +1886,7 @@ async def do_sync_training(
                                     "total_groups": n_total,
                                     "filtered_groups": n_filtered,
                                     "kept_groups": n_kept,
+                                    "num_oversampled": num_oversampled,
                                     "filter_ratio": f"{filter_ratio:.2%}",
                                     "reward_std_mean": (
                                         f"{torch.tensor(reward_stds).mean().item():.4f}"
@@ -2064,6 +2077,19 @@ async def main(
     num_batches = len(dataset)
     end_batch = min(config.max_steps, num_batches) if config.max_steps is not None else num_batches
     logger.info(f"Will train on {end_batch} batches")
+
+    # Validate dynamic_sampling is only used with sync training
+    if config.dynamic_sampling is not None:
+        if config.async_config is not None:
+            raise ConfigurationError(
+                "dynamic_sampling is only supported with synchronous training. "
+                "It cannot be used together with async_config."
+            )
+        if config.stream_minibatch_config is not None:
+            raise ConfigurationError(
+                "dynamic_sampling is only supported with synchronous training. "
+                "It cannot be used together with stream_minibatch_config."
+            )
 
     # Create KL reference client once if KL penalty is enabled
     if config.kl_penalty_coef > 0:
