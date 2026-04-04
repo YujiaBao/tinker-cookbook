@@ -1,6 +1,7 @@
 """Reinforcement learning: environment protocol, types, and training loops."""
 
 from tinker_cookbook.rl.interleaved import InterleavedRLDatasetBuilder
+from tinker_cookbook.rl.loss_masking import TrajectoryMaskSummary, compute_trajectory_mask_summary
 from tinker_cookbook.rl.rollout_strategy import FailFast, RetryOnFailure, RolloutStrategy
 from tinker_cookbook.rl.types import (
     Action,
@@ -37,6 +38,9 @@ __all__ = [
     "Transition",
     # Interleaved datasets (interleaved.py)
     "InterleavedRLDatasetBuilder",
+    # Loss masking utilities (loss_masking.py)
+    "TrajectoryMaskSummary",
+    "compute_trajectory_mask_summary",
     # Rollout strategies (rollout_strategy.py)
     "FailFast",
     "RetryOnFailure",
