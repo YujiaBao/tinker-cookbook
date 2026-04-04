@@ -7,8 +7,10 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import math
 import re
 import time
+from collections import deque
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Sequence
 from concurrent.futures import Executor
 from contextlib import contextmanager
@@ -30,6 +32,7 @@ from tinker_cookbook.exceptions import ConfigurationError
 from tinker_cookbook.rl.data_processing import (
     assemble_training_data,
     compute_advantages,
+    filter_low_variance_groups,
     remove_constant_reward_groups,
 )
 from tinker_cookbook.rl.metric_util import RLTestSetEvaluator, compute_trajectory_metrics
@@ -410,6 +413,32 @@ class AsyncConfig:
 
 
 @chz.chz
+class DynamicSamplingConfig:
+    """Configuration for DAPO-style dynamic sampling.
+
+    During RL training, some prompt groups produce zero-variance rewards (all
+    correct or all incorrect), providing no learning signal. Dynamic sampling
+    over-samples prompts and filters out low-variance groups after rollouts,
+    keeping only groups with diverse rewards that drive learning.
+
+    Attributes:
+        oversample_ratio (float): Factor by which to over-sample prompts
+            relative to the batch size. E.g. 1.5 means sample 50% more groups
+            than the nominal batch size. Must be >= 1.0.
+        min_reward_std (float): Minimum reward standard deviation to keep a
+            group. Groups with std <= this value are candidates for filtering.
+            Use 0.0 to filter only groups with exactly identical rewards.
+        max_filter_ratio (float): Maximum fraction of groups that may be
+            filtered in a single iteration. Must be in [0, 1). E.g. 0.5 means
+            at most half the groups can be removed.
+    """
+
+    oversample_ratio: float = 1.5
+    min_reward_std: float = 0.0
+    max_filter_ratio: float = 0.5
+
+
+@chz.chz
 class Config:
     """Configuration for RL training.
 
@@ -484,6 +513,9 @@ class Config:
     compute_post_kl: bool = False
     # Remove groups where all trajectories have identical reward.
     remove_constant_reward_groups: bool = False
+    # DAPO-style dynamic sampling: over-sample prompts, filter low-variance
+    # groups after rollouts. None = disabled.
+    dynamic_sampling: DynamicSamplingConfig | None = None
     # Tolerance for errors during rollouts (container crashes, sandbox flakes, etc.).
     # False (default): crash on any error (FailFast).
     # True: retry failed trajectories with default budget (RetryOnFailure(max_retries=3)).
@@ -1688,6 +1720,11 @@ async def do_sync_training(
         config.ttl_seconds,
     )
 
+    # Dynamic sampling: buffer of extra builders for replenishment
+    ds_cfg = config.dynamic_sampling
+    ds_buffer: deque[EnvGroupBuilder] = deque()
+    ds_next_batch_idx = end_batch  # index for pulling extra builders from beyond the batch range
+
     for i_batch in range(start_batch, end_batch):
         metrics: dict[str, Any] = {
             "progress/batch": i_batch,
@@ -1704,7 +1741,30 @@ async def do_sync_training(
                 metrics.update(eval_metrics)
 
             # Get batch and sample trajectories
-            env_group_builders_P = dataset.get_batch(i_batch)
+            env_group_builders_P = list(dataset.get_batch(i_batch))
+            nominal_batch_size = len(env_group_builders_P)
+
+            # Dynamic sampling: add oversampled builders from the buffer
+            if ds_cfg is not None:
+                num_extra = math.ceil(nominal_batch_size * (ds_cfg.oversample_ratio - 1.0))
+                # Pull from the buffer first
+                extra_builders: list[EnvGroupBuilder] = []
+                while len(extra_builders) < num_extra and ds_buffer:
+                    extra_builders.append(ds_buffer.popleft())
+                # If buffer is exhausted, pull from future dataset batches
+                while len(extra_builders) < num_extra and ds_next_batch_idx < len(dataset):
+                    future_batch = dataset.get_batch(ds_next_batch_idx)
+                    ds_next_batch_idx += 1
+                    for builder in future_batch:
+                        extra_builders.append(builder)
+                        if len(extra_builders) >= num_extra:
+                            break
+                    # Put any remainder into the buffer
+                    if len(extra_builders) > num_extra:
+                        for b in extra_builders[num_extra:]:
+                            ds_buffer.append(b)
+                        extra_builders = extra_builders[:num_extra]
+                env_group_builders_P.extend(extra_builders)
 
             # Initialize logtree trace for this iteration if logging is enabled
             iter_dir = iteration_dir(config.log_path, i_batch)
@@ -1771,6 +1831,27 @@ async def do_sync_training(
 
                 if config.remove_constant_reward_groups:
                     trajectory_groups_P = remove_constant_reward_groups(trajectory_groups_P)
+
+                # Dynamic sampling: filter low-variance groups
+                if ds_cfg is not None:
+                    pre_filter_count = len(trajectory_groups_P)
+                    trajectory_groups_P, num_filtered = filter_low_variance_groups(
+                        trajectory_groups_P,
+                        min_reward_std=ds_cfg.min_reward_std,
+                        max_filter_ratio=ds_cfg.max_filter_ratio,
+                    )
+                    metrics["dynamic_sampling/groups_before_filter"] = pre_filter_count
+                    metrics["dynamic_sampling/groups_after_filter"] = len(trajectory_groups_P)
+                    metrics["dynamic_sampling/groups_filtered"] = num_filtered
+                    metrics["dynamic_sampling/filter_ratio"] = (
+                        num_filtered / pre_filter_count if pre_filter_count > 0 else 0.0
+                    )
+                    metrics["dynamic_sampling/buffer_size"] = len(ds_buffer)
+                    if num_filtered > 0:
+                        logger.info(
+                            f"Dynamic sampling: filtered {num_filtered}/{pre_filter_count} "
+                            f"low-variance groups (kept {len(trajectory_groups_P)})"
+                        )
 
                 # Train step
                 sampling_client, train_step_metrics = await do_train_step_and_get_sampling_client(

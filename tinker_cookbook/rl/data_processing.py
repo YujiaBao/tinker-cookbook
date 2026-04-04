@@ -252,3 +252,66 @@ def remove_constant_reward_groups(
         return trajectory_groups_P[0:1]  # return singleton list in case empty
         # list will cause problems
     return new_groups
+
+
+def filter_low_variance_groups(
+    trajectory_groups_P: list[TrajectoryGroup],
+    min_reward_std: float,
+    max_filter_ratio: float,
+) -> tuple[list[TrajectoryGroup], int]:
+    """Filter trajectory groups with reward standard deviation below a threshold.
+
+    This implements the DAPO-style dynamic sampling filter: groups where the
+    reward standard deviation is at or below ``min_reward_std`` provide little
+    learning signal and are candidates for removal. At most
+    ``max_filter_ratio`` of groups will be filtered to ensure the batch does
+    not become too small.
+
+    Args:
+        trajectory_groups_P (list[TrajectoryGroup]): Groups of trajectories
+            to filter.
+        min_reward_std (float): Minimum reward standard deviation to keep a
+            group. Groups with std <= this value are candidates for filtering.
+        max_filter_ratio (float): Maximum fraction of groups that may be
+            filtered. Must be in [0, 1). E.g. 0.5 means at most half the
+            groups can be removed.
+
+    Returns:
+        tuple[list[TrajectoryGroup], int]: A tuple of (filtered groups, number
+            of groups removed). If all groups would be filtered, returns the
+            original list with 0 filtered.
+    """
+    assert 0.0 <= max_filter_ratio < 1.0, (
+        f"max_filter_ratio must be in [0, 1), got {max_filter_ratio}"
+    )
+
+    # Compute per-group reward std and classify as keep/filter
+    keep: list[TrajectoryGroup] = []
+    candidates_to_filter: list[TrajectoryGroup] = []
+    for group in trajectory_groups_P:
+        rewards = group.get_total_rewards()
+        std = float(torch.tensor(rewards).std().item()) if len(rewards) > 1 else 0.0
+        if std <= min_reward_std:
+            candidates_to_filter.append(group)
+        else:
+            keep.append(group)
+
+    # Cap the number of groups we actually filter
+    max_to_filter = int(len(trajectory_groups_P) * max_filter_ratio)
+    num_to_filter = min(len(candidates_to_filter), max_to_filter)
+
+    if num_to_filter == 0:
+        return trajectory_groups_P, 0
+
+    # Keep some of the candidate groups if we'd exceed the filter cap
+    num_to_keep_from_candidates = len(candidates_to_filter) - num_to_filter
+    keep.extend(candidates_to_filter[:num_to_keep_from_candidates])
+
+    if not keep:
+        logger.warning(
+            "Dynamic sampling: all groups have low reward variance. "
+            "Returning original groups to avoid empty batch."
+        )
+        return trajectory_groups_P, 0
+
+    return keep, num_to_filter
