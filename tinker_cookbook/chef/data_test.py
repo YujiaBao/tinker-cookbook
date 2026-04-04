@@ -62,35 +62,27 @@ def tmp_run(tmp_path: Path) -> Path:
     }
     (run_dir / "checkpoints.jsonl").write_text(json.dumps(ckpt) + "\n")
 
-    # timing_spans.jsonl
-    spans = [
+    # timing_spans.jsonl (nested format from trace.py write_spans_jsonl)
+    timing_lines = [
         {
             "step": 0,
-            "name": "forward_backward",
-            "start_time": 0.0,
-            "end_time": 1.5,
-            "wall_start": 1700000000.0,
-            "wall_end": 1700000001.5,
-        },
-        {
-            "step": 0,
-            "name": "optim_step",
-            "start_time": 1.5,
-            "end_time": 2.0,
-            "wall_start": 1700000001.5,
-            "wall_end": 1700000002.0,
+            "spans": [
+                {"name": "forward_backward", "duration": 1.5, "wall_start": 0.0, "wall_end": 1.5},
+                {"name": "optim_step", "duration": 0.5, "wall_start": 1.5, "wall_end": 2.0},
+                # policy_sample overlaps with env_step (concurrent)
+                {"name": "policy_sample", "duration": 0.8, "wall_start": 0.0, "wall_end": 0.8},
+                {"name": "env_step", "duration": 0.6, "wall_start": 0.2, "wall_end": 0.8},
+            ],
         },
         {
             "step": 1,
-            "name": "forward_backward",
-            "start_time": 2.0,
-            "end_time": 3.3,
-            "wall_start": 1700000002.0,
-            "wall_end": 1700000003.3,
+            "spans": [
+                {"name": "forward_backward", "duration": 1.3, "wall_start": 2.0, "wall_end": 3.3},
+            ],
         },
     ]
     (run_dir / "timing_spans.jsonl").write_text(
-        "\n".join(json.dumps(s) for s in spans) + "\n"
+        "\n".join(json.dumps(s) for s in timing_lines) + "\n"
     )
 
     # iteration directories with rollout summaries
@@ -398,17 +390,35 @@ class TestTimingReader:
     def test_read_all(self, tmp_run: Path) -> None:
         reader = TimingReader(tmp_run / "timing_spans.jsonl")
         new = reader.read()
-        assert len(new) == 3
-        assert new[0]["name"] == "forward_backward"
+        assert len(new) == 2  # Two step records
         assert new[0]["step"] == 0
+        assert len(new[0]["spans"]) == 4  # 4 spans in step 0
 
     def test_get_spans_for_step(self, tmp_run: Path) -> None:
         reader = TimingReader(tmp_run / "timing_spans.jsonl")
         reader.read()
         step0_spans = reader.get_spans_for_step(0)
-        assert len(step0_spans) == 2
+        assert len(step0_spans) == 4
         names = {s["name"] for s in step0_spans}
-        assert names == {"forward_backward", "optim_step"}
+        assert names == {"forward_backward", "optim_step", "policy_sample", "env_step"}
+
+    def test_get_all_spans_flat(self, tmp_run: Path) -> None:
+        reader = TimingReader(tmp_run / "timing_spans.jsonl")
+        reader.read()
+        flat = reader.get_all_spans_flat()
+        assert len(flat) == 5  # 4 spans in step 0 + 1 in step 1
+        # All should have step annotation
+        steps = {s["step"] for s in flat}
+        assert steps == {0, 1}
+
+    def test_concurrency_analysis(self, tmp_run: Path) -> None:
+        reader = TimingReader(tmp_run / "timing_spans.jsonl")
+        reader.read()
+        analysis = reader.get_concurrency_analysis(0)
+        # policy_sample (0.0-0.8) overlaps with env_step (0.2-0.8) and forward_backward (0.0-1.5)
+        assert analysis["max_concurrency"] >= 3
+        assert len(analysis["spans"]) == 4
+        assert len(analysis["timeline"]) > 0
 
     def test_incremental(self, tmp_run: Path) -> None:
         path = tmp_run / "timing_spans.jsonl"
@@ -416,15 +426,14 @@ class TestTimingReader:
         reader.read()
 
         with open(path, "a") as f:
-            f.write(json.dumps({"step": 2, "name": "new_span",
-                                "start_time": 5.0, "end_time": 6.0,
-                                "wall_start": 1700000005.0,
-                                "wall_end": 1700000006.0}) + "\n")
+            f.write(json.dumps({"step": 2, "spans": [
+                {"name": "new_span", "duration": 1.0, "wall_start": 5.0, "wall_end": 6.0}
+            ]}) + "\n")
 
         new = reader.read()
         assert len(new) == 1
-        assert new[0]["name"] == "new_span"
-        assert len(reader.records) == 4
+        assert new[0]["step"] == 2
+        assert len(reader.records) == 3
 
 
 # ── RunStore integration tests ────────────────────────────────────────
@@ -497,7 +506,7 @@ class TestRunStore:
         store = RunStore(tmp_run)
         run_id = store.get_runs()[0].run_id
         timing = store.get_timing(run_id)
-        assert len(timing) == 3
+        assert len(timing) == 2  # Two step records
 
     def test_nonexistent_run(self, tmp_run: Path) -> None:
         store = RunStore(tmp_run)

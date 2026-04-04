@@ -112,3 +112,77 @@ export interface LogtreeResponse {
   started_at: string;
   root: LogtreeNode;
 }
+
+// Eval benchmark types
+
+export interface EvalRunSummary {
+  eval_run_id: string;
+  model_name: string;
+  checkpoint_path?: string;
+  checkpoint_name?: string;
+  timestamp?: string;
+  benchmarks: string[];
+  scores: Record<string, number>;
+}
+
+export interface EvalRunDetail {
+  eval_run_id: string;
+  metadata: Record<string, unknown>;
+  benchmarks: string[];
+  results: Record<string, EvalBenchmarkResult>;
+}
+
+export interface EvalBenchmarkResult {
+  name: string;
+  score: number;
+  num_examples: number;
+  num_correct: number;
+  num_errors: number;
+  metrics: Record<string, number>;
+  time_seconds: number;
+  pass_at_k?: Record<number, number>;
+}
+
+export interface EvalTrajectorySummary {
+  idx: number;
+  example_id?: string;
+  reward: number;
+  num_turns: number;
+  time_seconds: number;
+  error?: string;
+  logs: Record<string, unknown>;
+}
+
+export interface EvalTrajectoriesResponse {
+  eval_run_id: string;
+  benchmark: string;
+  total: number;
+  trajectories: EvalTrajectorySummary[];
+}
+
+export interface EvalTrajectoryTurn {
+  role: string;
+  content: string;
+  token_count: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface EvalTrajectoryDetail {
+  idx: number;
+  benchmark: string;
+  example_id?: string;
+  turns: EvalTrajectoryTurn[];
+  reward: number;
+  metrics: Record<string, number>;
+  logs: Record<string, unknown>;
+  error?: string;
+  time_seconds: number;
+}
+
+export interface ScoresTableRow {
+  run_id: string;
+  model_name: string;
+  checkpoint_name?: string;
+  timestamp?: string;
+  scores: Record<string, number>;
+}

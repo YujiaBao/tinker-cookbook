@@ -39,16 +39,19 @@ def _create_run_dir(run_dir: Path) -> None:
     }
     (run_dir / "checkpoints.jsonl").write_text(json.dumps(ckpt) + "\n")
 
-    spans = [
-        {"step": 0, "name": "forward_backward", "start_time": 0.0, "end_time": 1.5,
-         "wall_start": 1700000000.0, "wall_end": 1700000001.5},
-        {"step": 0, "name": "optim_step", "start_time": 1.5, "end_time": 2.0,
-         "wall_start": 1700000001.5, "wall_end": 1700000002.0},
-        {"step": 1, "name": "forward_backward", "start_time": 2.0, "end_time": 3.3,
-         "wall_start": 1700000002.0, "wall_end": 1700000003.3},
+    timing_lines = [
+        {"step": 0, "spans": [
+            {"name": "forward_backward", "duration": 1.5, "wall_start": 0.0, "wall_end": 1.5},
+            {"name": "optim_step", "duration": 0.5, "wall_start": 1.5, "wall_end": 2.0},
+            {"name": "policy_sample", "duration": 0.8, "wall_start": 0.0, "wall_end": 0.8},
+            {"name": "env_step", "duration": 0.6, "wall_start": 0.2, "wall_end": 0.8},
+        ]},
+        {"step": 1, "spans": [
+            {"name": "forward_backward", "duration": 1.3, "wall_start": 2.0, "wall_end": 3.3},
+        ]},
     ]
     (run_dir / "timing_spans.jsonl").write_text(
-        "\n".join(json.dumps(s) for s in spans) + "\n"
+        "\n".join(json.dumps(s) for s in timing_lines) + "\n"
     )
 
     for iteration in [0, 2, 4]:
@@ -360,7 +363,7 @@ class TestTimingAPI:
         resp = client.get(f"/api/runs/{run_id}/timing")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["total_records"] == 3
+        assert data["total_records"] == 2  # 2 step records
 
     def test_timing_step_filter(self, client) -> None:
         runs = client.get("/api/runs").json()
@@ -371,7 +374,28 @@ class TestTimingAPI:
             params={"step_start": 0, "step_end": 0},
         )
         data = resp.json()
-        assert data["total_records"] == 2  # forward_backward + optim_step at step 0
+        assert data["total_records"] == 1  # One step record for step 0
+
+    def test_timing_flat(self, client) -> None:
+        runs = client.get("/api/runs").json()
+        run_id = runs[0]["run_id"]
+
+        resp = client.get(f"/api/runs/{run_id}/timing/flat")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_spans"] == 5  # 4 spans in step 0 + 1 in step 1
+
+    def test_concurrency_analysis(self, client) -> None:
+        runs = client.get("/api/runs").json()
+        run_id = runs[0]["run_id"]
+
+        resp = client.get(f"/api/runs/{run_id}/timing/concurrency/0")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["step"] == 0
+        assert len(data["spans"]) == 4
+        assert data["max_concurrency"] >= 3  # 3 overlapping spans
+        assert len(data["timeline"]) > 0
 
     def test_timing_404(self, client) -> None:
         resp = client.get("/api/runs/nonexistent/timing")

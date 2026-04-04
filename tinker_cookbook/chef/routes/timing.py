@@ -6,11 +6,9 @@ from fastapi import APIRouter, HTTPException, Query
 
 from tinker_cookbook.chef.data.store import RunStore
 
-router = APIRouter(prefix="/api/runs", tags=["timing"])
-
-
 def create_router(store: RunStore) -> APIRouter:
     """Create the timing router bound to a specific RunStore."""
+    router = APIRouter(prefix="/api/runs", tags=["timing"])
 
     @router.get("/{run_id}/timing")
     async def get_timing(

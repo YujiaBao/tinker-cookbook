@@ -84,4 +84,25 @@ export const api = {
 
   // SSE stream URL (for EventSource)
   metricsStreamUrl: (runId: string) => `${BASE}/runs/${runId}/metrics/stream`,
+
+  // Eval benchmarks
+  listEvalRuns: () =>
+    fetchJSON<import('./types').EvalRunSummary[]>(`${BASE}/eval/runs`),
+  getEvalRun: (evalRunId: string) =>
+    fetchJSON<import('./types').EvalRunDetail>(`${BASE}/eval/runs/${evalRunId}`),
+  getEvalTrajectories: (evalRunId: string, benchmark: string, params?: { correct_only?: boolean; errors_only?: boolean }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.correct_only) searchParams.set('correct_only', 'true');
+    if (params?.errors_only) searchParams.set('errors_only', 'true');
+    const qs = searchParams.toString();
+    return fetchJSON<import('./types').EvalTrajectoriesResponse>(
+      `${BASE}/eval/runs/${evalRunId}/${benchmark}/trajectories${qs ? '?' + qs : ''}`
+    );
+  },
+  getEvalTrajectoryDetail: (evalRunId: string, benchmark: string, idx: number) =>
+    fetchJSON<import('./types').EvalTrajectoryDetail>(
+      `${BASE}/eval/runs/${evalRunId}/${benchmark}/trajectories/${idx}`
+    ),
+  getScoresTable: () =>
+    fetchJSON<import('./types').ScoresTableRow[]>(`${BASE}/eval/scores`),
 };
