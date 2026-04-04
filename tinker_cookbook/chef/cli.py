@@ -8,7 +8,35 @@ Usage::
 
 import argparse
 import logging
+import os
 import sys
+
+
+# The chef, in all their glory
+BANNER = r"""
+      ___________
+     /           \
+    |  TINKER     |
+    |    CHEF     |
+     \___________/
+         | |
+     .---' '---.
+    /  ^     ^  \
+   |  (o)   (o)  |
+   |      <      |
+   |    \___/    |
+    \           /
+     '---___---'
+      /  | |  \
+     /  /   \  \
+    |__|     |__|
+"""
+
+BANNER_MINI = r"""
+  [ TINKER CHEF ]
+     (o   o)
+      \__/
+"""
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -16,6 +44,11 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="tinker-chef",
         description="Tinker Chef — training visualization dashboard for tinker-cookbook",
+    )
+    parser.add_argument(
+        "--no-banner",
+        action="store_true",
+        help="Suppress the ASCII art banner",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -58,6 +91,21 @@ def main(argv: list[str] | None = None) -> None:
         _run_serve(args)
 
 
+def _show_banner(no_banner: bool) -> None:
+    """Print the ASCII art banner unless suppressed."""
+    if no_banner or os.environ.get("TINKER_CHEF_NO_BANNER"):
+        return
+
+    # Use mini banner if terminal is narrow
+    try:
+        cols = os.get_terminal_size().columns
+    except OSError:
+        cols = 80
+
+    banner = BANNER_MINI if cols < 50 else BANNER
+    print(banner)
+
+
 def _run_serve(args: argparse.Namespace) -> None:
     """Start the Tinker Chef server."""
     try:
@@ -79,9 +127,12 @@ def _run_serve(args: argparse.Namespace) -> None:
 
     app = create_app(args.log_dir)
 
-    print(f"\n  Tinker Chef starting on http://{args.host}:{args.port}")
+    _show_banner(args.no_banner)
+
     print(f"  Serving runs from: {args.log_dir}")
-    print(f"  API docs at: http://{args.host}:{args.port}/docs\n")
+    print(f"  Dashboard:  http://{args.host}:{args.port}")
+    print(f"  API docs:   http://{args.host}:{args.port}/docs")
+    print()
 
     uvicorn.run(
         app,
