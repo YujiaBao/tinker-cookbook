@@ -1,9 +1,23 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
-import type { TimingRecord } from '../api/types';
 
 interface Props {
   runId: string;
+}
+
+interface FlatSpan {
+  step: number;
+  name: string;
+  duration: number;
+  wall_start: number;
+  wall_end: number;
+}
+
+interface ConcurrencyData {
+  step: number;
+  spans: FlatSpan[];
+  max_concurrency: number;
+  timeline: { time: number; concurrency: number }[];
 }
 
 // Color palette for span types
@@ -15,6 +29,7 @@ const SPAN_COLORS: Record<string, string> = {
   run_evals: '#06b6d4',
   gather_rollouts: '#ec4899',
   compute_advantages: '#8b5cf6',
+  env_step: '#14b8a6',
 };
 
 function getSpanColor(name: string): string {
@@ -22,66 +37,73 @@ function getSpanColor(name: string): string {
 }
 
 export function TimingPanel({ runId }: Props) {
-  const [records, setRecords] = useState<TimingRecord[]>([]);
+  const [spans, setSpans] = useState<FlatSpan[]>([]);
+  const [concurrency, setConcurrency] = useState<ConcurrencyData | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedStep, setSelectedStep] = useState<number | null>(null);
 
+  // Load all flat spans
   useEffect(() => {
-    api
-      .getTiming(runId)
-      .then((resp) => setRecords(resp.records))
-      .catch(() => setRecords([]))
+    fetch(`/api/runs/${runId}/timing/flat`)
+      .then((r) => r.json())
+      .then((data) => setSpans(data.spans ?? []))
+      .catch(() => setSpans([]))
       .finally(() => setLoading(false));
   }, [runId]);
 
+  // Load concurrency analysis for selected step
+  useEffect(() => {
+    if (selectedStep === null) {
+      setConcurrency(null);
+      return;
+    }
+    fetch(`/api/runs/${runId}/timing/concurrency/${selectedStep}`)
+      .then((r) => r.json())
+      .then((data) => setConcurrency(data))
+      .catch(() => setConcurrency(null));
+  }, [runId, selectedStep]);
+
   if (loading) return <div className="loading">Loading timing data...</div>;
-  if (records.length === 0) {
+  if (spans.length === 0) {
     return <div className="empty-state">No timing data available</div>;
   }
 
-  // Get unique steps
-  const steps = [...new Set(records.map((r) => r.step))].sort((a, b) => a - b);
+  const steps = [...new Set(spans.map((s) => s.step))].sort((a, b) => a - b);
+  const spanNames = [...new Set(spans.map((s) => s.name))].sort();
 
-  // Get unique span names for the legend
-  const spanNames = [...new Set(records.map((r) => r.name))].sort();
-
-  // Filter records for selected step, or show all if none selected
-  const displayRecords = selectedStep !== null
-    ? records.filter((r) => r.step === selectedStep)
-    : records;
-
-  // Group by step for the waterfall view
-  const stepGroups = new Map<number, TimingRecord[]>();
-  for (const r of displayRecords) {
-    if (!stepGroups.has(r.step)) stepGroups.set(r.step, []);
-    stepGroups.get(r.step)!.push(r);
+  // Select first step by default
+  if (selectedStep === null && steps.length > 0) {
+    // Don't setState in render — use the first step for display
   }
+  const displayStep = selectedStep ?? steps[0];
 
-  // Aggregate timing stats
+  // Aggregate stats across all spans
   const stats = new Map<string, { total: number; count: number; max: number }>();
-  for (const r of records) {
-    const duration = r.end_time - r.start_time;
-    if (!stats.has(r.name)) stats.set(r.name, { total: 0, count: 0, max: 0 });
-    const s = stats.get(r.name)!;
-    s.total += duration;
-    s.count += 1;
-    s.max = Math.max(s.max, duration);
+  for (const s of spans) {
+    if (!stats.has(s.name)) stats.set(s.name, { total: 0, count: 0, max: 0 });
+    const st = stats.get(s.name)!;
+    st.total += s.duration;
+    st.count += 1;
+    st.max = Math.max(st.max, s.duration);
   }
+
+  // Get spans for waterfall display
+  const stepSpans = spans.filter((s) => s.step === displayStep);
 
   return (
     <div>
-      {/* Timing summary table */}
+      {/* Timing summary */}
       <div className="card" style={{ marginBottom: '16px' }}>
         <div className="card-header">
           <span className="card-title">Timing Summary</span>
           <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            {records.length} spans across {steps.length} steps
+            {spans.length} spans across {steps.length} steps
           </span>
         </div>
         <table className="data-table">
           <thead>
             <tr>
-              <th>Span Name</th>
+              <th>Span</th>
               <th>Count</th>
               <th>Total (s)</th>
               <th>Mean (s)</th>
@@ -95,16 +117,10 @@ export function TimingPanel({ runId }: Props) {
               return (
                 <tr key={name} style={{ cursor: 'default' }}>
                   <td>
-                    <span
-                      style={{
-                        display: 'inline-block',
-                        width: 8,
-                        height: 8,
-                        borderRadius: '50%',
-                        background: getSpanColor(name),
-                        marginRight: 8,
-                      }}
-                    />
+                    <span style={{
+                      display: 'inline-block', width: 8, height: 8,
+                      borderRadius: '50%', background: getSpanColor(name), marginRight: 8,
+                    }} />
                     {name}
                   </td>
                   <td className="mono">{s.count}</td>
@@ -118,74 +134,164 @@ export function TimingPanel({ runId }: Props) {
         </table>
       </div>
 
-      {/* Step selector */}
+      {/* Step selector + concurrency indicator */}
       <div className="filters-bar">
         <div className="filter-group">
           <span className="filter-label">Step</span>
           <select
-            value={selectedStep ?? 'all'}
-            onChange={(e) =>
-              setSelectedStep(e.target.value === 'all' ? null : Number(e.target.value))
-            }
+            value={displayStep}
+            onChange={(e) => setSelectedStep(Number(e.target.value))}
           >
-            <option value="all">All ({steps.length} steps)</option>
             {steps.map((step) => (
-              <option key={step} value={step}>
-                Step {step}
-              </option>
+              <option key={step} value={step}>Step {step}</option>
             ))}
           </select>
         </div>
+        {concurrency && (
+          <div style={{ fontSize: '0.8rem' }}>
+            <span className="text-muted">Peak concurrency: </span>
+            <span className={`badge ${concurrency.max_concurrency > 1 ? 'badge-blue' : ''}`}>
+              {concurrency.max_concurrency}x parallel
+            </span>
+          </div>
+        )}
       </div>
 
-      {/* Waterfall view */}
-      {Array.from(stepGroups.entries())
-        .sort(([a], [b]) => a - b)
-        .slice(0, 20) // Limit to 20 steps in view
-        .map(([step, spans]) => {
-          const minWall = Math.min(...spans.map((s) => s.wall_start));
-          const maxWall = Math.max(...spans.map((s) => s.wall_end));
-          const totalWidth = maxWall - minWall || 1;
+      {/* Waterfall for selected step */}
+      {stepSpans.length > 0 && (
+        <div className="card" style={{ marginBottom: '16px' }}>
+          <div className="card-header">
+            <span className="card-title">Step {displayStep} — Execution Waterfall</span>
+          </div>
+          <WaterfallChart spans={stepSpans} />
+        </div>
+      )}
 
+      {/* Concurrency timeline */}
+      {concurrency && concurrency.timeline.length > 0 && (
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Concurrency Over Time</span>
+          </div>
+          <ConcurrencyTimeline data={concurrency} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WaterfallChart({ spans }: { spans: FlatSpan[] }) {
+  if (spans.length === 0) return null;
+  const minWall = Math.min(...spans.map((s) => s.wall_start));
+  const maxWall = Math.max(...spans.map((s) => s.wall_end));
+  const totalWidth = maxWall - minWall || 1;
+
+  // Sort by start time for clean visual layout
+  const sorted = [...spans].sort((a, b) => a.wall_start - b.wall_start);
+
+  return (
+    <div style={{ position: 'relative', height: sorted.length * 28 + 8, marginTop: 8 }}>
+      {sorted.map((span, idx) => {
+        const left = ((span.wall_start - minWall) / totalWidth) * 100;
+        const width = ((span.wall_end - span.wall_start) / totalWidth) * 100;
+        return (
+          <div
+            key={`${span.name}-${idx}`}
+            title={`${span.name}: ${span.duration.toFixed(3)}s (wall: ${span.wall_start.toFixed(3)}s - ${span.wall_end.toFixed(3)}s)`}
+            style={{
+              position: 'absolute',
+              left: `${left}%`,
+              width: `${Math.max(width, 0.5)}%`,
+              top: idx * 28,
+              height: 22,
+              borderRadius: 4,
+              background: getSpanColor(span.name),
+              fontSize: '0.65rem',
+              display: 'flex',
+              alignItems: 'center',
+              padding: '0 6px',
+              color: 'white',
+              overflow: 'hidden',
+              whiteSpace: 'nowrap',
+              opacity: 0.9,
+              cursor: 'default',
+            }}
+          >
+            {width > 10 && (
+              <>
+                <span style={{ fontWeight: 600 }}>{span.name}</span>
+                <span style={{ marginLeft: 6, opacity: 0.8 }}>{span.duration.toFixed(3)}s</span>
+              </>
+            )}
+            {width <= 10 && width > 4 && <span style={{ fontWeight: 600 }}>{span.name}</span>}
+          </div>
+        );
+      })}
+
+      {/* Time axis labels */}
+      <div style={{
+        position: 'absolute', bottom: -16, left: 0, right: 0,
+        display: 'flex', justifyContent: 'space-between',
+        fontSize: '0.6rem', color: 'var(--text-muted)',
+      }}>
+        <span>0s</span>
+        <span>{(totalWidth / 2).toFixed(2)}s</span>
+        <span>{totalWidth.toFixed(2)}s</span>
+      </div>
+    </div>
+  );
+}
+
+function ConcurrencyTimeline({ data }: { data: ConcurrencyData }) {
+  const { timeline, max_concurrency } = data;
+  if (timeline.length === 0) return null;
+
+  const minTime = timeline[0].time;
+  const maxTime = timeline[timeline.length - 1].time;
+  const timeRange = maxTime - minTime || 1;
+  const height = 80;
+
+  // Build path for the step chart
+  const points: string[] = [];
+  for (const pt of timeline) {
+    const x = ((pt.time - minTime) / timeRange) * 100;
+    const y = height - (pt.concurrency / Math.max(max_concurrency, 1)) * (height - 10);
+    if (points.length > 0) {
+      // Step chart: go horizontal first, then vertical
+      const prevY = points[points.length - 1].split(',')[1];
+      points.push(`${x},${prevY}`);
+    }
+    points.push(`${x},${y}`);
+  }
+
+  return (
+    <div style={{ padding: '8px 0' }}>
+      <svg width="100%" height={height + 20} viewBox={`0 0 100 ${height + 20}`} preserveAspectRatio="none">
+        {/* Grid lines */}
+        {Array.from({ length: max_concurrency + 1 }, (_, i) => {
+          const y = height - (i / Math.max(max_concurrency, 1)) * (height - 10);
           return (
-            <div key={step} className="card" style={{ marginBottom: '8px', padding: '12px 16px' }}>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
-                Step {step} — {totalWidth.toFixed(2)}s total
-              </div>
-              <div style={{ position: 'relative', height: spans.length * 24 + 4 }}>
-                {spans.map((span, idx) => {
-                  const left = ((span.wall_start - minWall) / totalWidth) * 100;
-                  const width = ((span.wall_end - span.wall_start) / totalWidth) * 100;
-                  return (
-                    <div
-                      key={`${span.name}-${idx}`}
-                      title={`${span.name}: ${(span.end_time - span.start_time).toFixed(3)}s`}
-                      style={{
-                        position: 'absolute',
-                        left: `${left}%`,
-                        width: `${Math.max(width, 0.5)}%`,
-                        top: idx * 24,
-                        height: 20,
-                        borderRadius: 3,
-                        background: getSpanColor(span.name),
-                        fontSize: '0.65rem',
-                        display: 'flex',
-                        alignItems: 'center',
-                        padding: '0 4px',
-                        color: 'white',
-                        overflow: 'hidden',
-                        whiteSpace: 'nowrap',
-                        opacity: 0.85,
-                      }}
-                    >
-                      {width > 8 ? span.name : ''}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            <g key={i}>
+              <line x1="0" y1={y} x2="100" y2={y} stroke="var(--border)" strokeWidth="0.2" />
+              <text x="1" y={y - 1} fontSize="3" fill="var(--text-muted)">{i}</text>
+            </g>
           );
         })}
+        {/* Concurrency line */}
+        <polyline
+          points={points.join(' ')}
+          fill="none"
+          stroke="var(--accent)"
+          strokeWidth="0.5"
+        />
+      </svg>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between',
+        fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 4,
+      }}>
+        <span>{minTime.toFixed(3)}s</span>
+        <span>{maxTime.toFixed(3)}s</span>
+      </div>
     </div>
   );
 }
