@@ -36,7 +36,6 @@ Usage in a training loop::
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Sequence
 
 import numpy as np
