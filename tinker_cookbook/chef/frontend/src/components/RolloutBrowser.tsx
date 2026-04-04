@@ -21,6 +21,8 @@ export function RolloutBrowser({ runId, iterations }: Props) {
   const [rollouts, setRollouts] = useState<RolloutSummary[]>([]);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [tagFilter, setTagFilter] = useState<string>('');
+  const [minReward, setMinReward] = useState<string>('');
+  const [maxReward, setMaxReward] = useState<string>('');
   const [loading, setLoading] = useState(false);
 
   const iterationsWithRollouts = iterations.filter((it) => it.has_train_rollouts);
@@ -35,14 +37,18 @@ export function RolloutBrowser({ runId, iterations }: Props) {
     if (selectedIter === null) return;
     setLoading(true);
     api
-      .getRollouts(runId, selectedIter, { tag: tagFilter || undefined })
+      .getRollouts(runId, selectedIter, {
+        tag: tagFilter || undefined,
+        min_reward: minReward !== '' ? Number(minReward) : undefined,
+        max_reward: maxReward !== '' ? Number(maxReward) : undefined,
+      })
       .then((resp) => {
         setRollouts(resp.rollouts);
         setAvailableTags(resp.available_tags);
       })
       .catch(() => setRollouts([]))
       .finally(() => setLoading(false));
-  }, [runId, selectedIter, tagFilter]);
+  }, [runId, selectedIter, tagFilter, minReward, maxReward]);
 
   if (iterations.length === 0) {
     return <div className="empty-state">No iteration data available</div>;
@@ -130,6 +136,43 @@ export function RolloutBrowser({ runId, iterations }: Props) {
             </select>
           </div>
         )}
+
+        <div className="filter-group">
+          <span className="filter-label">Reward</span>
+          <input
+            type="number"
+            placeholder="min"
+            value={minReward}
+            onChange={(e) => setMinReward(e.target.value)}
+            step="0.1"
+            style={{
+              width: '60px',
+              padding: '0.3125rem 0.375rem',
+              borderRadius: '6px',
+              border: '1px solid var(--border)',
+              background: 'var(--bg-tertiary)',
+              color: 'var(--text-primary)',
+              fontSize: '0.8125rem',
+            }}
+          />
+          <span className="text-muted" style={{ fontSize: '0.75rem' }}>to</span>
+          <input
+            type="number"
+            placeholder="max"
+            value={maxReward}
+            onChange={(e) => setMaxReward(e.target.value)}
+            step="0.1"
+            style={{
+              width: '60px',
+              padding: '0.3125rem 0.375rem',
+              borderRadius: '6px',
+              border: '1px solid var(--border)',
+              background: 'var(--bg-tertiary)',
+              color: 'var(--text-primary)',
+              fontSize: '0.8125rem',
+            }}
+          />
+        </div>
 
         <div style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
           {rollouts.length} rollout{rollouts.length !== 1 ? 's' : ''}
