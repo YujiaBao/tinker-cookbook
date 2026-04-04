@@ -188,56 +188,55 @@ class RunStore:
 
     # --- Eval Benchmarks ---
 
-    def _get_eval_reader(self, run_id: str) -> EvalReader | None:
-        """Get an EvalReader for a training run's eval data.
-
-        Looks for eval data in several conventional locations relative
-        to the training run directory.
-        """
-        if run_id not in self._eval_readers:
-            path = self._run_path(run_id)
-            if path is None:
-                return None
-            # Check common eval data locations
-            for candidate in [
-                path / "eval",
-                path / "eval_store",
-                path.parent / "eval",  # sibling directory
-            ]:
-                if candidate.is_dir() and (
-                    (candidate / "runs.jsonl").exists()
-                    or (candidate / "runs").is_dir()
-                ):
-                    self._eval_readers[run_id] = EvalReader(candidate)
-                    return self._eval_readers[run_id]
-            # No eval data found — cache the miss as None
-            return None
-        return self._eval_readers.get(run_id)
+    _EVAL_MISS = object()  # sentinel for cached misses
 
     def get_eval_reader(self, run_id: str) -> EvalReader | None:
-        return self._get_eval_reader(run_id)
+        """Get an EvalReader for a training run's eval data."""
+        cached = self._eval_readers.get(run_id)
+        if cached is self._EVAL_MISS:
+            return None
+        if cached is not None:
+            return cached
 
-    def get_eval_scores_matrix(self, run_id: str) -> list[dict[str, Any]]:
-        reader = self._get_eval_reader(run_id)
-        if reader is None:
-            return []
-        return reader.get_scores_table()
+        path = self._run_path(run_id)
+        if path is None:
+            self._eval_readers[run_id] = self._EVAL_MISS  # type: ignore[assignment]
+            return None
 
-    # --- Global eval store (not per-run) ---
+        for candidate in [
+            path / "eval",
+            path / "eval_store",
+            path.parent / "eval",
+        ]:
+            if candidate.is_dir() and (
+                (candidate / "runs.jsonl").exists() or (candidate / "runs").is_dir()
+            ):
+                reader = EvalReader(candidate)
+                self._eval_readers[run_id] = reader
+                return reader
+
+        self._eval_readers[run_id] = self._EVAL_MISS  # type: ignore[assignment]
+        return None
 
     def get_global_eval_reader(self) -> EvalReader | None:
         """Look for eval data at the root level."""
-        if "__global__" not in self._eval_readers:
-            for candidate in [
-                self._root / "eval",
-                self._root / "eval_store",
-                self._root,
-            ]:
-                if candidate.is_dir() and (
-                    (candidate / "runs.jsonl").exists()
-                    or (candidate / "runs").is_dir()
-                ):
-                    self._eval_readers["__global__"] = EvalReader(candidate)
-                    return self._eval_readers["__global__"]
+        cached = self._eval_readers.get("__global__")
+        if cached is self._EVAL_MISS:
             return None
-        return self._eval_readers.get("__global__")
+        if cached is not None:
+            return cached
+
+        for candidate in [
+            self._root / "eval",
+            self._root / "eval_store",
+            self._root,
+        ]:
+            if candidate.is_dir() and (
+                (candidate / "runs.jsonl").exists() or (candidate / "runs").is_dir()
+            ):
+                reader = EvalReader(candidate)
+                self._eval_readers["__global__"] = reader
+                return reader
+
+        self._eval_readers["__global__"] = self._EVAL_MISS  # type: ignore[assignment]
+        return None

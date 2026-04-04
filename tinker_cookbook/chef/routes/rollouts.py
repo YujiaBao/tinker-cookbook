@@ -25,20 +25,24 @@ def create_router(store: RunStore) -> APIRouter:
         if run is None:
             raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
 
-        rollouts = store.get_rollouts(run_id, iteration, split, label)
+        all_rollouts = store.get_rollouts(run_id, iteration, split, label)
+
+        # Collect tags before filtering
+        all_tags: set[str] = set()
+        for r in all_rollouts:
+            all_tags.update(r.get("tags", []))
 
         # Apply filters
+        filtered = all_rollouts
         if tag is not None:
-            rollouts = [r for r in rollouts if tag in r.get("tags", [])]
+            filtered = [r for r in filtered if tag in r.get("tags", [])]
         if min_reward is not None:
-            rollouts = [r for r in rollouts if r.get("total_reward", 0) >= min_reward]
+            filtered = [r for r in filtered if r.get("total_reward", 0) >= min_reward]
         if max_reward is not None:
-            rollouts = [r for r in rollouts if r.get("total_reward", 0) <= max_reward]
+            filtered = [r for r in filtered if r.get("total_reward", 0) <= max_reward]
 
-        # Build lightweight summaries (omit full step details for the list view)
-        summaries = []
-        for r in rollouts:
-            summaries.append({
+        summaries = [
+            {
                 "group_idx": r.get("group_idx"),
                 "traj_idx": r.get("traj_idx"),
                 "tags": r.get("tags", []),
@@ -47,13 +51,9 @@ def create_router(store: RunStore) -> APIRouter:
                 "num_steps": len(r.get("steps", [])),
                 "final_ob_len": r.get("final_ob_len"),
                 "sampling_client_step": r.get("sampling_client_step"),
-            })
-
-        # Collect all unique tags for filter UI
-        all_tags: set[str] = set()
-        all_rollouts = store.get_rollouts(run_id, iteration, split, label)
-        for r in all_rollouts:
-            all_tags.update(r.get("tags", []))
+            }
+            for r in filtered
+        ]
 
         return {
             "run_id": run_id,

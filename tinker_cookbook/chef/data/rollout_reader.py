@@ -1,12 +1,10 @@
 """Reader for per-iteration rollout summary JSONL files."""
 
-import json
-import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from tinker_cookbook.chef.data.io import read_jsonl
 
 
 class RolloutReader:
@@ -25,19 +23,8 @@ class RolloutReader:
         split: str = "train",
         label: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Read rollout summaries for a specific iteration and split.
-
-        Args:
-            iteration: The iteration number.
-            split: Dataset split ("train" or "eval").
-            label: For eval splits, the evaluation label (e.g. "test").
-
-        Returns:
-            List of rollout summary records.
-        """
+        """Read rollout summaries for a specific iteration and split."""
         iter_dir = self._run_path / f"iteration_{iteration:06d}"
-        if not iter_dir.is_dir():
-            return []
 
         if split == "train":
             filename = "train_rollout_summaries.jsonl"
@@ -46,8 +33,7 @@ class RolloutReader:
         else:
             filename = f"{split}_rollout_summaries.jsonl"
 
-        path = iter_dir / filename
-        return self._read_jsonl_cached(path)
+        return self._read_cached(iter_dir / filename)
 
     def read_single_rollout(
         self,
@@ -66,19 +52,5 @@ class RolloutReader:
 
     @staticmethod
     @lru_cache(maxsize=64)
-    def _read_jsonl_cached(path: Path) -> list[dict[str, Any]]:
-        """Read and cache a JSONL file. Cached by path (immutable past iterations)."""
-        if not path.exists():
-            return []
-
-        records: list[dict[str, Any]] = []
-        try:
-            with open(path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        records.append(json.loads(line))
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning("Failed to read rollouts from %s: %s", path, e)
-
-        return records
+    def _read_cached(path: Path) -> list[dict[str, Any]]:
+        return read_jsonl(path)

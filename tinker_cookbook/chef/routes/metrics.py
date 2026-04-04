@@ -75,7 +75,7 @@ def create_router(store: RunStore) -> APIRouter:
                     # Send keepalive comment every poll cycle
                     yield ": keepalive\n\n"
 
-                await asyncio.sleep(2)
+                await asyncio.sleep(15)
 
         return StreamingResponse(
             event_generator(),

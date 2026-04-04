@@ -1,10 +1,12 @@
 """Run discovery and detail API routes."""
 
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from tinker_cookbook.chef.data.io import read_jsonl
 from tinker_cookbook.chef.data.store import RunStore
 
 def create_router(store: RunStore) -> APIRouter:
@@ -83,20 +85,7 @@ def create_router(store: RunStore) -> APIRouter:
         run = store.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-        # Reuse metrics reader pattern for checkpoints.jsonl
-        import json
-        from pathlib import Path
-
-        ckpt_path = Path(run.path) / "checkpoints.jsonl"
-        if not ckpt_path.exists():
-            return []
-        records = []
-        with open(ckpt_path) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    records.append(json.loads(line))
-        return records
+        return read_jsonl(Path(run.path) / "checkpoints.jsonl")
 
     return router
 

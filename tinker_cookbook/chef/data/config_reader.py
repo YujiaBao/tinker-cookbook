@@ -1,11 +1,9 @@
 """Reader for config.json files."""
 
-import json
-import logging
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from tinker_cookbook.chef.data.io import read_json
 
 
 class ConfigReader:
@@ -17,6 +15,7 @@ class ConfigReader:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._config: dict[str, Any] | None = None
+        self._read_attempted: bool = False
 
     @property
     def path(self) -> Path:
@@ -24,16 +23,8 @@ class ConfigReader:
 
     def read(self) -> dict[str, Any] | None:
         """Read the config, returning the cached value on subsequent calls."""
-        if self._config is not None:
+        if self._read_attempted:
             return self._config
-
-        if not self._path.exists():
-            return None
-
-        try:
-            with open(self._path) as f:
-                self._config = json.load(f)
-            return self._config
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning("Failed to read config %s: %s", self._path, e)
-            return None
+        self._read_attempted = True
+        self._config = read_json(self._path)
+        return self._config
