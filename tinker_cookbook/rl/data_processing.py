@@ -11,7 +11,8 @@ import tinker
 import torch
 from tinker import TensorData
 
-from tinker_cookbook.rl.types import Trajectory, TrajectoryGroup
+from tinker_cookbook.exceptions import ConfigurationError
+from tinker_cookbook.rl.types import EnvGroupBuilder, Trajectory, TrajectoryGroup
 from tinker_cookbook.supervised.common import (
     create_rightshifted_model_input_and_leftshifted_targets,
 )
@@ -258,8 +259,8 @@ def filter_low_variance_groups(
     trajectory_groups_P: list[TrajectoryGroup],
     min_reward_std: float,
     max_filter_ratio: float,
-    env_group_builders_P: list | None = None,
-) -> tuple[list[TrajectoryGroup], int, list | None]:
+    env_group_builders_P: list[EnvGroupBuilder] | None = None,
+) -> tuple[list[TrajectoryGroup], int, list[EnvGroupBuilder] | None]:
     """Filter trajectory groups with reward standard deviation below a threshold.
 
     This implements the DAPO-style dynamic sampling filter: groups where the
@@ -290,14 +291,16 @@ def filter_low_variance_groups(
             builders or None). If all groups would be filtered, returns the
             original lists with 0 filtered.
     """
-    assert 0.0 <= max_filter_ratio < 1.0, (
-        f"max_filter_ratio must be in [0, 1), got {max_filter_ratio}"
-    )
-    if env_group_builders_P is not None:
-        assert len(env_group_builders_P) == len(trajectory_groups_P), (
-            f"env_group_builders_P length ({len(env_group_builders_P)}) must match "
-            f"trajectory_groups_P length ({len(trajectory_groups_P)})"
+    if not (0.0 <= max_filter_ratio < 1.0):
+        raise ConfigurationError(
+            f"max_filter_ratio must be in [0, 1), got {max_filter_ratio}"
         )
+    if env_group_builders_P is not None:
+        if len(env_group_builders_P) != len(trajectory_groups_P):
+            raise ConfigurationError(
+                f"env_group_builders_P length ({len(env_group_builders_P)}) must match "
+                f"trajectory_groups_P length ({len(trajectory_groups_P)})"
+            )
 
     # Compute per-group reward std and classify as keep/filter by index
     keep_indices: list[int] = []

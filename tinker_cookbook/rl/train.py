@@ -413,7 +413,7 @@ class AsyncConfig:
 
 def _validate_oversample_ratio(v: float) -> float:
     if v < 1.0:
-        raise ValueError(f"oversample_ratio must be >= 1.0, got {v}")
+        raise ConfigurationError(f"oversample_ratio must be >= 1.0, got {v}")
     return v
 
 
@@ -426,7 +426,7 @@ class DynamicSamplingConfig:
     over-samples prompts and filters out low-variance groups after rollouts,
     keeping only groups with diverse rewards that drive learning.
 
-    Attributes:
+    Args:
         oversample_ratio (float): Factor by which to over-sample prompts
             relative to the batch size. E.g. 1.5 means sample 50% more groups
             than the nominal batch size. Must be >= 1.0.
