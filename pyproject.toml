@@ -79,6 +79,10 @@ inspect = [
 litellm = [
     "litellm>=1.80.0,!=1.82.7,!=1.82.8",
 ]
+chef = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+]
 all = [
     "tinker_cookbook[math-rl]",
     "tinker_cookbook[modal]",
@@ -90,7 +94,11 @@ all = [
     "tinker_cookbook[verifiers]",
     "tinker_cookbook[inspect]",
     "tinker_cookbook[litellm]",
+    "tinker_cookbook[chef]",
 ]
+
+[project.scripts]
+tinker-chef = "tinker_cookbook.chef.cli:main"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
