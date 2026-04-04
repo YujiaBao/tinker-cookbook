@@ -543,11 +543,12 @@ def resolve_loss_fn(config: Config) -> tuple[LossFnType, dict[str, Any] | None]:
         A ``(loss_fn, loss_fn_config)`` tuple ready for
         :func:`train_step`.
     """
-    if config.policy_loss_name is not None:
-        from tinker_cookbook.rl.algorithm_registry import get_policy_loss_config
+    with trace.scope_span_sync("resolve_loss_fn"):
+        if config.policy_loss_name is not None:
+            from tinker_cookbook.rl.algorithm_registry import get_policy_loss_config
 
-        return get_policy_loss_config(config.policy_loss_name)
-    return config.loss_fn, config.loss_fn_config
+            return get_policy_loss_config(config.policy_loss_name)
+        return config.loss_fn, config.loss_fn_config
 
 
 @trace.scope
@@ -1978,6 +1979,31 @@ async def main(
     num_batches = len(dataset)
     end_batch = min(config.max_steps, num_batches) if config.max_steps is not None else num_batches
     logger.info(f"Will train on {end_batch} batches")
+
+    # Log algorithm configuration
+    effective_loss_fn, effective_loss_fn_config = resolve_loss_fn(config)
+    policy_loss_label = config.policy_loss_name if config.policy_loss_name is not None else str(config.loss_fn)
+    algo_info: dict[str, str] = {
+        "advantage_estimator": config.advantage_name,
+        "policy_loss": policy_loss_label,
+    }
+    if effective_loss_fn_config is not None:
+        algo_info["policy_loss_config"] = str(effective_loss_fn_config)
+    logger.info(f"Algorithm config: advantage={config.advantage_name}, policy_loss={policy_loss_label}")
+    ml_logger.log_metrics(
+        {
+            "algorithm/advantage_estimator": config.advantage_name,
+            "algorithm/policy_loss": policy_loss_label,
+        },
+        step=0,
+    )
+    # Write algorithm configuration to logtree HTML for human-readable logs
+    algo_logtree_dir = Path(config.log_path)
+    algo_logtree_dir.mkdir(parents=True, exist_ok=True)
+    algo_logtree_path = str(algo_logtree_dir / "algorithm_config.html")
+    with logtree.init_trace("Algorithm Configuration", path=algo_logtree_path):
+        with logtree.scope_header("Algorithm Configuration"):
+            logtree.table_from_dict(algo_info, caption="Selected algorithms")
 
     # Create KL reference client once if KL penalty is enabled
     if config.kl_penalty_coef > 0:

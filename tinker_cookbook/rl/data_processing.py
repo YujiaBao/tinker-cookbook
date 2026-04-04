@@ -50,8 +50,9 @@ def compute_advantages(
     """
     from tinker_cookbook.rl.algorithm_registry import get_advantage_fn
 
-    advantage_fn = get_advantage_fn(advantage_name)
-    return advantage_fn(trajectory_groups_P, **kwargs)
+    with trace.scope_span_sync("compute_advantages"):
+        advantage_fn = get_advantage_fn(advantage_name)
+        return advantage_fn(trajectory_groups_P, **kwargs)
 
 
 FlatObElem = int | tinker.ModelInputChunk

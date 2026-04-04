@@ -229,6 +229,65 @@ class TestGlobalRegistries:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Telemetry integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestComputeAdvantagesTrace:
+    """Test that compute_advantages works with the trace span wrapper."""
+
+    def test_compute_advantages_with_trace(self) -> None:
+        from tinker_cookbook.rl.data_processing import compute_advantages
+
+        group = _make_group([2.0, 4.0])
+        result = compute_advantages([group], advantage_name="grpo")
+        assert len(result) == 1
+        expected = torch.tensor([-1.0, 1.0])
+        assert torch.allclose(result[0], expected)
+
+    def test_compute_advantages_normalized(self) -> None:
+        from tinker_cookbook.rl.data_processing import compute_advantages
+
+        group = _make_group([1.0, 3.0, 5.0])
+        result = compute_advantages([group], advantage_name="normalized_grpo")
+        assert len(result) == 1
+        # Should have mean ~0
+        assert abs(float(result[0].mean())) < 1e-6
+
+
+class TestResolveLossFn:
+    """Test resolve_loss_fn with trace span wrapper."""
+
+    def test_resolve_default_loss(self) -> None:
+        from tinker_cookbook.rl.train import Config, resolve_loss_fn
+
+        config = Config.__new__(Config)
+        object.__setattr__(config, "policy_loss_name", None)
+        object.__setattr__(config, "loss_fn", "importance_sampling")
+        object.__setattr__(config, "loss_fn_config", None)
+        loss_fn, loss_config = resolve_loss_fn(config)
+        assert loss_fn == "importance_sampling"
+        assert loss_config is None
+
+    def test_resolve_registered_loss(self) -> None:
+        from tinker_cookbook.rl.train import Config, resolve_loss_fn
+
+        config = Config.__new__(Config)
+        object.__setattr__(config, "policy_loss_name", "ppo")
+        object.__setattr__(config, "loss_fn", "importance_sampling")
+        object.__setattr__(config, "loss_fn_config", None)
+        loss_fn, loss_config = resolve_loss_fn(config)
+        assert loss_fn == "ppo"
+        assert loss_config is not None
+        assert "clip_param" in loss_config
+
+
+# ---------------------------------------------------------------------------
+# Decorator API tests
+# ---------------------------------------------------------------------------
+
+
 class TestDecoratorApi:
     def test_register_advantage_decorator(self) -> None:
         # The decorator should return the original function
