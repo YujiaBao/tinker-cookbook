@@ -15,23 +15,11 @@ function Nav() {
   return (
     <header className="app-header">
       <Link to="/" className="app-logo">Tinker Chef</Link>
-      <nav style={{ display: 'flex', gap: '0.5rem', marginLeft: '1.5rem' }}>
-        <Link
-          to="/"
-          className={`tab ${isTraining ? 'active' : ''}`}
-          style={{ borderBottom: 'none', padding: '0.25rem 0.75rem' }}
-        >
-          Training
-        </Link>
-        <Link
-          to="/eval"
-          className={`tab ${isEval ? 'active' : ''}`}
-          style={{ borderBottom: 'none', padding: '0.25rem 0.75rem' }}
-        >
-          Eval
-        </Link>
+      <nav className="app-nav">
+        <Link to="/" className={isTraining ? 'active' : ''}>Training</Link>
+        <Link to="/eval" className={isEval ? 'active' : ''}>Eval</Link>
       </nav>
-      <span className="app-tagline" style={{ marginLeft: 'auto' }}>Training Visualization Dashboard</span>
+      <span className="app-tagline">Training Dashboard</span>
     </header>
   );
 }

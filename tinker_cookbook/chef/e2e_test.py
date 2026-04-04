@@ -7,6 +7,7 @@ Run with: pytest tinker_cookbook/chef/e2e_test.py --headed  (to watch)
 """
 
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -129,6 +130,10 @@ def fixture_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture(scope="session")
 def server(fixture_dir: Path):
     """Start the Tinker Chef server as a subprocess."""
+    # Ensure the worktree root is on PYTHONPATH so the subprocess can find tinker_cookbook
+    worktree_root = Path(__file__).resolve().parent.parent.parent
+    env = {**os.environ, "PYTHONPATH": str(worktree_root)}
+
     proc = subprocess.Popen(
         [
             sys.executable, "-m", "tinker_cookbook.chef.cli",
@@ -138,6 +143,7 @@ def server(fixture_dir: Path):
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
     )
 
     # Wait for server to start
