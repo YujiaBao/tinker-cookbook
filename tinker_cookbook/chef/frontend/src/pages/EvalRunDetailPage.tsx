@@ -17,6 +17,7 @@ export function EvalRunDetailPage() {
   const [selectedBenchmark, setSelectedBenchmark] = useState<string | null>(null);
   const [trajectories, setTrajectories] = useState<EvalTrajectorySummary[]>([]);
   const [filter, setFilter] = useState<'all' | 'correct' | 'errors'>('all');
+  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -94,9 +95,20 @@ export function EvalRunDetailPage() {
     },
   ];
 
-  // Count correct/errors for the filter bar
-  const correctCount = trajectories.filter((t) => t.reward > 0).length;
-  const errorCount = trajectories.filter((t) => t.error).length;
+  // Client-side search filtering
+  const searched = search
+    ? trajectories.filter((t) => {
+        const q = search.toLowerCase();
+        return (
+          (t.example_id && t.example_id.toLowerCase().includes(q)) ||
+          (t.error && t.error.toLowerCase().includes(q)) ||
+          String(t.idx).includes(q)
+        );
+      })
+    : trajectories;
+
+  const correctCount = searched.filter((t) => t.reward > 0).length;
+  const errorCount = searched.filter((t) => t.error).length;
 
   return (
     <div>
@@ -146,17 +158,32 @@ export function EvalRunDetailPage() {
             <div className="filter-group">
               <span className="filter-label">Show</span>
               <select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)}>
-                <option value="all">All ({trajectories.length})</option>
+                <option value="all">All ({searched.length})</option>
                 <option value="correct">Correct ({correctCount})</option>
                 <option value="errors">Errors ({errorCount})</option>
               </select>
             </div>
+            <input
+              type="text"
+              placeholder="Search by example ID, error..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{
+                padding: '0.3125rem 0.625rem',
+                borderRadius: '6px',
+                border: '1px solid var(--border)',
+                background: 'var(--bg-tertiary)',
+                color: 'var(--text-primary)',
+                fontSize: '0.8125rem',
+                width: '220px',
+              }}
+            />
           </div>
 
           <div className="card" style={{ padding: 0, overflow: 'auto' }}>
             <SortableTable
               columns={trajColumns}
-              data={trajectories}
+              data={searched}
               rowKey={(t) => String(t.idx)}
               onRowClick={(t) => navigate(`/eval/${evalRunId}/${selectedBenchmark}/${t.idx}`)}
             />
