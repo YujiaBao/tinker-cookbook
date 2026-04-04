@@ -48,3 +48,19 @@ def test_math_rl_stream_minibatch():
             "behavior_if_log_dir_exists=delete",
         ],
     )
+
+
+@pytest.mark.integration
+def test_math_rl_dynamic_sampling():
+    run_recipe(
+        MODULE,
+        [
+            "model_name=Qwen/Qwen3.5-4B",
+            "groups_per_batch=8",
+            "group_size=4",
+            "max_tokens=5",
+            "dynamic_sampling.oversample_ratio=1.5",
+            "dynamic_sampling.max_filter_ratio=0.5",
+            "behavior_if_log_dir_exists=delete",
+        ],
+    )
