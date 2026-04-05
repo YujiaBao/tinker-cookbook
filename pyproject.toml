@@ -84,6 +84,10 @@ eval = [
     "tinker_cookbook[modal]",
     "antlr4-python3-runtime>=4.11,<4.14",
 ]
+chef = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+]
 all = [
     "tinker_cookbook[eval]",
     "tinker_cookbook[math-rl]",
@@ -96,7 +100,11 @@ all = [
     "tinker_cookbook[verifiers]",
     "tinker_cookbook[inspect]",
     "tinker_cookbook[litellm]",
+    "tinker_cookbook[chef]",
 ]
+
+[project.scripts]
+tinker-chef = "tinker_cookbook.chef.cli:main"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

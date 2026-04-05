@@ -101,6 +101,7 @@ class SpanRecord:
     end_time: float  # seconds (perf_counter, process-local)
     wall_start: float  # seconds since epoch (time.time, cross-process comparable)
     wall_end: float  # seconds since epoch (time.time, cross-process comparable)
+    attributes: dict[str, Any] = field(default_factory=dict)  # scope context attributes
 
 
 class IterationWindow:
@@ -137,7 +138,7 @@ class IterationWindow:
         self._lock = threading.Lock()
         self._total_time: float | None = None
 
-    def record_span(self, name: str, start_time: float, end_time: float) -> None:
+    def record_span(self, name: str, start_time: float, end_time: float, attributes: dict[str, Any] | None = None) -> None:
         """Record a completed span into this window.
 
         Thread-safe. Wall-clock timestamps are derived from the monotonic
@@ -157,6 +158,7 @@ class IterationWindow:
                     end_time=end_time,
                     wall_start=time.time() - (time.perf_counter() - start_time),
                     wall_end=time.time() - (time.perf_counter() - end_time),
+                    attributes=dict(attributes) if attributes else {},
                 )
             )
 
@@ -264,15 +266,17 @@ class IterationWindow:
             return
 
         t0 = min(s.wall_start for s in spans)
-        span_dicts = [
-            {
+        span_dicts = []
+        for s in spans:
+            d: dict[str, Any] = {
                 "name": s.name,
                 "duration": s.end_time - s.start_time,
                 "wall_start": s.wall_start - t0,
                 "wall_end": s.wall_end - t0,
             }
-            for s in spans
-        ]
+            if s.attributes:
+                d["attributes"] = s.attributes
+            span_dicts.append(d)
         line = json.dumps({"step": step, "spans": span_dicts})
         with open(path, "a") as f:
             f.write(line + "\n")
@@ -612,7 +616,9 @@ def _make_scope_wrapper(func: Callable[..., Any], name: str) -> Callable[..., An
                     try:
                         return await func(*args, **kwargs)
                     finally:
-                        window.record_span(name, t_start, time.perf_counter())
+                        ctx = trace_context.get(None)
+                        attrs = dict(ctx.attributes) if ctx else {}
+                        window.record_span(name, t_start, time.perf_counter(), attributes=attrs)
                 return await func(*args, **kwargs)
 
             events_result = _create_trace_events(name)

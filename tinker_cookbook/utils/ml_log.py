@@ -160,13 +160,19 @@ class JsonLogger(Logger):
     :meth:`log_metrics` calls append one JSON object per line to
     ``metrics.jsonl``.
 
+    Supports an optional ``Storage`` backend for writing to S3/GCS.
+    If not provided, writes to the local filesystem (backward compatible).
+
     Args:
         log_dir (str | Path): Directory for output files (created if missing).
+        storage: Optional ``Storage`` instance for abstracted file I/O.
     """
 
-    def __init__(self, log_dir: str | Path):
+    def __init__(self, log_dir: str | Path, storage: Any | None = None):
         self.log_dir = Path(log_dir).expanduser()
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self._storage = storage
+        if self._storage is None:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_file = self.log_dir / "metrics.jsonl"
         self._logged_hparams = False
 
@@ -174,22 +180,31 @@ class JsonLogger(Logger):
         """Log hyperparameters to a separate config.json file."""
         if not self._logged_hparams:
             config_dict = dump_config(config)
-            config_file = self.log_dir / "config.json"
-            with open(config_file, "w") as f:
-                json.dump(config_dict, f, indent=2, cls=_PermissiveJSONEncoder)
-            diff_file = code_state()
-            with open(self.log_dir / "code.diff", "w") as f:
-                f.write(diff_file)
+            config_json = json.dumps(config_dict, indent=2, cls=_PermissiveJSONEncoder)
+            diff_text = code_state()
+
+            if self._storage is not None:
+                self._storage.write("config.json", config_json.encode("utf-8"))
+                self._storage.write("code.diff", diff_text.encode("utf-8"))
+            else:
+                with open(self.log_dir / "config.json", "w") as f:
+                    f.write(config_json)
+                with open(self.log_dir / "code.diff", "w") as f:
+                    f.write(diff_text)
             self._logged_hparams = True
 
     def log_metrics(self, metrics: dict[str, Any], step: int | None = None) -> None:
         """Append metrics to JSONL file."""
         log_entry = {"step": step} if step is not None else {}
         log_entry.update(metrics)
+        line = json.dumps(log_entry) + "\n"
 
-        with open(self.metrics_file, "a") as f:
-            f.write(json.dumps(log_entry) + "\n")
-            logger.info("Wrote metrics to %s", self.metrics_file)
+        if self._storage is not None:
+            self._storage.append("metrics.jsonl", line.encode("utf-8"))
+        else:
+            with open(self.metrics_file, "a") as f:
+                f.write(line)
+        logger.info("Wrote metrics to %s", self.metrics_file)
 
 
 class PrettyPrintLogger(Logger):
@@ -502,6 +517,7 @@ def setup_logging(
     wandb_name: str | None = None,
     config: Any | None = None,
     do_configure_logging_module: bool = True,
+    storage: Any | None = None,
 ) -> Logger:
     """
     Set up logging infrastructure with multiple backends.
@@ -524,7 +540,7 @@ def setup_logging(
     loggers = []
 
     # Always add JSON logger
-    loggers.append(JsonLogger(log_dir_path))
+    loggers.append(JsonLogger(log_dir_path, storage=storage))
 
     # Always add pretty print logger
     loggers.append(PrettyPrintLogger())

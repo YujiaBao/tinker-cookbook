@@ -709,11 +709,12 @@ async def do_sync_training_with_stream_minibatch(
 
                 @trace.scope
                 async def trajectory_group_worker_task(
-                    builder: EnvGroupBuilder, enable_logging: bool
+                    builder: EnvGroupBuilder, enable_logging: bool, group_idx: int = 0
                 ) -> None:
                     worker_metrics: dict[str, Any] = {}
                     t_start = time.time()
                     async with trace.scope_span("trajectory_group_worker"):
+                        trace.update_scope_context({"group_idx": group_idx})
                         trajectory_group = await do_group_rollout_and_filter_constant_reward(
                             sampling_client,
                             builder,
@@ -746,7 +747,7 @@ async def do_sync_training_with_stream_minibatch(
                 for i, builder in enumerate(env_group_builders_P):
                     asyncio.create_task(
                         trajectory_group_worker_task(
-                            builder, enable_logging=i < config.num_groups_to_log
+                            builder, enable_logging=i < config.num_groups_to_log, group_idx=i
                         ),
                         name=f"trajectory_group_worker_task_{i}",
                     )
