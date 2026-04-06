@@ -3,6 +3,11 @@
 Provides Storage protocols for byte-level I/O (local, S3, GCS),
 typed stores for training and eval data, and a registry for
 discovering runs across multiple backends.
+
+Note: ``EvalStore`` is not imported here to avoid circular imports
+with ``tinker_cookbook.eval``. Import it directly::
+
+    from tinker_cookbook.stores.eval_store import EvalStore
 """
 
 from tinker_cookbook.stores._incremental import IncrementalReader
