@@ -269,6 +269,15 @@ class _SWEBenchEnvFactory(SandboxMixin, Env):
             await self.cleanup()
             raise
 
+        # Install project dependencies so the model can run tests
+        try:
+            await self.sandbox.run_command(
+                "cd /workspace/repo && pip install -e . 2>&1 | tail -5",
+                timeout=300,
+            )
+        except Exception as e:
+            logger.debug(f"swe_bench: pip install -e . failed (may be ok): {e}")
+
         # Apply test patch
         if self.test_patch.strip():
             try:
